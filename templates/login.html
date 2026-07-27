@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#050307">
+  <title>Acesso restrito — DS - PLANNERX</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/css/style.css') }}?v=2.0">
+  <script defer src="{{ url_for('static', path='/js/app.js') }}?v=2.0"></script>
+</head>
+<body class="login-page">
+  <main class="login-stage">
+    <div class="login-backdrop-logo" aria-hidden="true"><img src="{{ url_for('static', path='/img/dnadarkviral-logo.svg') }}" alt=""></div>
+    <div class="login-orb orb-one" aria-hidden="true"></div><div class="login-orb orb-two" aria-hidden="true"></div>
+    <section class="login-card" aria-labelledby="loginTitle">
+      <div class="login-brand"><div class="login-brand-mark">DS</div><div><span>PLANNER</span><strong>X</strong></div></div>
+      <div class="login-heading"><span class="login-kicker">🔒 ACESSO RESTRITO</span><h1 id="loginTitle">Central privada de produção</h1><p>Entre com o usuário autorizado para acessar canais, metas e arquivos.</p></div>
+      {% if error %}<div class="login-error" role="alert"><span>!</span>{{ error }}</div>{% endif %}
+      <form action="{{ url_for('login_submit') }}" method="post" class="login-form" autocomplete="on">
+        <label class="login-field"><span>Nome de usuário</span><div class="login-input-wrap"><span class="login-input-icon">👤</span><input name="username" value="{{ username or '' }}" autocomplete="username" placeholder="Digite seu usuário" required autofocus></div></label>
+        <label class="login-field"><span>Senha</span><div class="login-input-wrap"><span class="login-input-icon">✦</span><input id="loginPassword" type="password" name="password" autocomplete="current-password" placeholder="••••••••••" required><button class="password-toggle" type="button" data-password-toggle="loginPassword" aria-label="Mostrar senha">👁</button></div></label>
+        <button class="login-submit" type="submit"><span>Entrar no PlannerX</span><b>→</b></button>
+      </form>
+      <div class="login-security"><span>◆</span><p>Sessão local protegida. O acesso expira automaticamente após 12 horas.</p></div>
+    </section>
+    <footer class="login-footer">DNADARKVIRAL · DS - PLANNERX</footer>
+  </main>
+</body>
+</html>

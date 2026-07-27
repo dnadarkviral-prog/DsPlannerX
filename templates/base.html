@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b0711">
+  <title>{% block title %}DS - PLANNERX{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/css/style.css') }}?v=2.0">
+  <script defer src="{{ url_for('static', path='/js/app.js') }}?v=2.1"></script>
+  {% if cloud_upload_enabled %}<script type="module" src="{{ url_for('static', path='/js/cloud-upload.js') }}?v=2.1"></script>{% endif %}
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a href="{{ url_for('dashboard') }}" class="brand">
+        <span class="brand-mark">DS</span>
+        <span><strong>PLANNER</strong><em>X</em></span>
+      </a>
+      <nav class="nav-list">
+        <a href="{{ url_for('dashboard') }}" class="nav-item {% if active_endpoint == 'dashboard' %}active{% endif %}">
+          <span class="nav-emoji">🏠</span><span>Painel geral</span>
+        </a>
+        <button class="nav-item nav-button" type="button" data-open-modal="channelModal">
+          <span class="nav-emoji">➕</span><span>Novo canal</span>
+        </button>
+      </nav>
+      <div class="sidebar-note">
+        <span class="sparkle">✦</span>
+        <strong>Produção organizada</strong>
+        <p>Planeje, anexe e acompanhe cada vídeo em um só lugar.</p>
+      </div>
+      <div class="sidebar-account">
+        <div class="sidebar-user"><span>🔐</span><div><small>ACESSO ATIVO</small><strong>{{ current_user or 'Admdsscale' }}</strong></div></div>
+        <form action="{{ url_for('logout') }}" method="post"><button class="logout-button" type="submit">↪ Sair</button></form>
+      </div>
+      <div class="sidebar-footer">DarkScaleX Academy</div>
+    </aside>
+
+    <main class="main-content">
+      <header class="topbar">
+        <div>
+          <span class="eyebrow">CENTRAL DE PRODUÇÃO</span>
+          <h1>{% block page_title %}DS - PLANNERX{% endblock %}</h1>
+        </div>
+        <div class="topbar-actions">
+          {% block topbar_actions %}
+          <button type="button" class="btn btn-primary" data-open-modal="channelModal">✨ Criar canal</button>
+          {% endblock %}
+        </div>
+      </header>
+
+      {% if messages %}
+          <div class="toast-stack">
+            {% for category, message in messages %}
+              <div class="toast {{ category }}"><span>{{ '✓' if category == 'success' else '!' }}</span>{{ message }}</div>
+            {% endfor %}
+          </div>
+      {% endif %}
+
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+
+  <div class="modal" id="channelModal" aria-hidden="true">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-dialog large">
+      <div class="modal-head">
+        <div><span class="eyebrow">NOVO ESPAÇO</span><h2>Adicionar canal</h2></div>
+        <button class="icon-button" type="button" data-close-modal>✕</button>
+      </div>
+      <form action="{{ url_for('create_channel') }}" method="post" enctype="multipart/form-data" class="form-grid" data-cloud-upload-form>
+        <label class="field span-2">
+          <span>Nome do canal</span>
+          <input name="name" required placeholder="Ex.: Histórias de Família">
+        </label>
+        <label class="field span-2">
+          <span>Descrição</span>
+          <textarea name="description" rows="3" placeholder="Tema, público e observações do canal"></textarea>
+        </label>
+        <label class="field">
+          <span>Meta de títulos</span>
+          <input type="number" name="title_goal" min="1" value="12" required>
+        </label>
+        <div class="field span-2 frequency-config" data-frequency-config>
+          <span>Como calcular o ritmo de postagem?</span>
+          <div class="frequency-mode-options">
+            <label class="frequency-mode-option">
+              <input type="radio" name="frequency_mode" value="interval" checked>
+              <span><b>📆 Intervalo entre postagens</b><small>Ex.: 27, 29, 31 — dia sim, dia não.</small></span>
+            </label>
+            <label class="frequency-mode-option">
+              <input type="radio" name="frequency_mode" value="days_off">
+              <span><b>⏸️ Dias completos sem postar</b><small>Ex.: 27, 30, 02 — dois dias inteiros de pausa.</small></span>
+            </label>
+          </div>
+        </div>
+        <label class="field" data-frequency-value-field>
+          <span data-frequency-value-label>Publicar a cada quantos dias?</span>
+          <div class="input-suffix"><input type="number" name="interval_days" min="1" value="2" required><span data-frequency-value-suffix>dias entre postagens</span></div>
+          <small class="frequency-help" data-frequency-help>Começando dia 27: 27, 29, 31...</small>
+        </label>
+        <label class="field">
+          <span>Data da primeira postagem</span>
+          <input type="date" name="start_date" value="{{ today }}" required>
+        </label>
+        <div class="field span-2 period-config" data-period-config>
+          <span>Como definir o período do planejamento?</span>
+          <div class="period-mode-options">
+            <label class="period-mode-option">
+              <input type="radio" name="period_mode" value="months" checked>
+              <span><b>🗓️ Mês(es) completo(s)</b><small>27/07 + 1 mês termina exatamente em 27/08.</small></span>
+            </label>
+            <label class="period-mode-option">
+              <input type="radio" name="period_mode" value="days">
+              <span><b>🔢 Quantidade exata de dias</b><small>Ex.: 36 dias inclui de 27/07 até 31/08.</small></span>
+            </label>
+            <label class="period-mode-option">
+              <input type="radio" name="period_mode" value="month_end">
+              <span><b>📅 Até o fim de um mês</b><small>Ex.: escolher agosto calcula até 31/08.</small></span>
+            </label>
+          </div>
+        </div>
+        <label class="field" data-period-value-field>
+          <span data-period-value-label>Quantidade de meses completos</span>
+          <div class="input-suffix"><input type="number" name="period_value" min="1" max="120" value="{{ default_period_value }}" required data-period-value><span data-period-value-suffix>mês</span></div>
+          <small class="field-help" data-period-value-help></small>
+        </label>
+        <label class="field" data-planning-month-field hidden>
+          <span>Mês final do planejamento</span>
+          <input type="month" name="planning_month" value="{{ default_planning_month }}" data-planning-month>
+          <small class="field-help">A agenda vai até o último dia do mês escolhido.</small>
+        </label>
+        <div class="period-preview span-2" data-period-help></div>
+        <label class="field file-field">
+          <span>Imagem do canal</span>
+          <input type="file" name="image" accept="image/*">
+        </label>
+        <div class="modal-actions span-2">
+          <button type="button" class="btn btn-ghost" data-close-modal>Cancelar</button>
+          <button type="submit" class="btn btn-primary">💜 Criar canal</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</body>
+</html>

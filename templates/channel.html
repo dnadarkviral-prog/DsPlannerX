@@ -1,0 +1,329 @@
+{% extends 'base.html' %}
+{% block title %}{{ channel.name }} — DS - PLANNERX{% endblock %}
+{% block page_title %}{{ channel.name }}{% endblock %}
+{% block topbar_actions %}
+<a class="btn btn-ghost" href="{{ url_for('dashboard') }}">← Voltar</a>
+<button class="btn btn-secondary" type="button" data-open-modal="settingsModal">⚙️ Configurar</button>
+<button class="btn btn-primary" type="button" data-open-modal="videoModal">＋ Novo vídeo</button>
+{% endblock %}
+
+{% block content %}
+<section class="channel-hero">
+  <div class="hero-identity">
+    <div class="hero-avatar {% if channel.image_path %}with-image{% endif %}"
+      {% if channel.image_path %}style="background-image:url('{{ channel.image_path|asset_url }}')"{% endif %}>
+      {% if not channel.image_path %}{{ channel.name[0]|upper }}{% endif %}
+    </div>
+    <div><span class="eyebrow">PLANEJAMENTO DO CANAL</span><h2>{{ channel.name }}</h2><p>{{ channel.description or 'Adicione uma descrição nas configurações do canal.' }}</p></div>
+  </div>
+  <div class="hero-metrics">
+    <section class="daily-goals-card" aria-label="Metas diárias de produção">
+      <div class="daily-goals-head">
+        <div><span>METAS DIÁRIAS</span><small>Hoje · {{ daily_stats.date_br }}</small></div>
+        <button class="daily-goals-settings" type="button" data-open-modal="dailyGoalsModal" title="Configurar metas diárias" aria-label="Configurar metas diárias">🎚️</button>
+      </div>
+      <div class="daily-goal-row {% if daily_stats.scripts_complete %}goal-complete{% endif %}">
+        <div class="daily-goal-line"><span>📜 Roteiros</span><strong>{{ daily_stats.scripts_done }}/{{ daily_stats.script_goal }}</strong></div>
+        <div class="daily-progress-track"><div class="daily-progress-fill script" style="width:{{ daily_stats.script_progress }}%"></div></div>
+      </div>
+      <div class="daily-goal-row {% if daily_stats.videos_complete %}goal-complete{% endif %}">
+        <div class="daily-goal-line"><span>🎬 Vídeos</span><strong>{{ daily_stats.videos_done }}/{{ daily_stats.video_goal }}</strong></div>
+        <div class="daily-progress-track"><div class="daily-progress-fill video" style="width:{{ daily_stats.video_progress }}%"></div></div>
+      </div>
+    </section>
+    <div class="hero-progress">
+      <div class="progress-circle" style="--progress:{{ stats.progress }}"><div><strong>{{ stats.progress|int }}%</strong><span>concluído</span></div></div>
+      <div><span>Meta de produção</span><strong>{{ stats.completed }} de {{ stats.goal }} vídeos</strong><small>{{ stats.remaining_titles }} vídeos ainda precisam ser concluídos</small></div>
+    </div>
+  </div>
+</section>
+
+<section class="stats-grid channel-stats">
+  <article class="stat-card motivation-card" aria-label="Frase motivacional do canal">
+    <div class="motivation-emoji">{{ motivation.emoji }}</div>
+    <div class="motivation-copy">
+      <span>{{ motivation.label }}</span>
+      <p>{{ motivation.text }}</p>
+    </div>
+  </article>
+  <article class="stat-card"><div class="stat-icon orange">🎬</div><div><span>Em produção</span><strong>{{ stats.production }}</strong></div></article>
+  <article class="stat-card"><div class="stat-icon green">✅</div><div><span>Concluídos</span><strong>{{ stats.completed }}</strong></div></article>
+  <article class="stat-card titles-remaining-card">
+    <div class="titles-remaining-content">
+      <span>Títulos restantes</span>
+      <strong>{{ stats.remaining_titles }}</strong>
+      <small>Diminuem somente quando um vídeo é concluído</small>
+    </div>
+  </article>
+</section>
+
+<section class="planner-layout">
+  <div class="planner-main">
+    <div class="section-heading inline">
+      <div><span class="eyebrow">CARDS DE PRODUÇÃO</span><h2>Vídeos planejados</h2></div>
+      <button class="btn btn-primary" type="button" data-open-modal="videoModal">＋ Adicionar vídeo</button>
+    </div>
+
+    <form class="filter-bar" method="get">
+      <div class="search-box">⌕ <input name="q" value="{{ search }}" placeholder="Buscar título ou anotação"></div>
+      <select name="status" onchange="this.form.submit()">
+        <option value="all" {% if status_filter == 'all' %}selected{% endif %}>Todos os status</option>
+        <option value="production" {% if status_filter == 'production' %}selected{% endif %}>Em produção</option>
+        <option value="completed" {% if status_filter == 'completed' %}selected{% endif %}>Concluído</option>
+      </select>
+      <button class="btn btn-ghost" type="submit">Filtrar</button>
+    </form>
+
+    {% if videos %}
+    <div class="video-grid" id="videoGrid">
+      {% for video in videos %}
+      <article class="video-card {% if video.cover_image_path %}has-cover{% endif %}" data-video-card data-status="{{ video.status }}">
+        <a href="{{ url_for('video_detail', video_id=video.id) }}" class="video-card-link">
+          <div class="video-cover">
+            {% if video.cover_image_path %}
+            <img src="{{ video.cover_image_path|asset_url }}" alt="Capa de {{ video.title }}" loading="lazy">
+            {% else %}
+            <div class="video-cover-placeholder"><span>🖼️</span><small>Adicionar foto de capa</small></div>
+            {% endif %}
+            <div class="video-cover-overlay"></div>
+            <div class="video-card-top">
+              <div class="video-icon">{{ '✅' if video.status == 'completed' else '🎬' }}</div>
+              <span class="video-date">{{ video.planned_date|date_br if video.planned_date else 'Sem data' }}</span>
+            </div>
+          </div>
+          <div class="video-card-body">
+            <h3>{{ video.title }}</h3>
+            <p>{{ video.description or 'Abra o card para adicionar arquivos, roteiro, observações e materiais.' }}</p>
+          </div>
+        </a>
+        <div class="video-card-footer">
+          <button class="script-ready-toggle {% if video.script_completed_at %}ready{% endif %}" type="button" data-script-ready data-video-id="{{ video.id }}" data-ready="{{ 'true' if video.script_completed_at else 'false' }}" title="Marcar ou desmarcar o roteiro como pronto">
+            <span>{{ '✅' if video.script_completed_at else '📜' }}</span><b>{{ 'Roteiro pronto' if video.script_completed_at else 'Marcar roteiro' }}</b>
+          </button>
+          <select class="status-select {{ video.status }}" data-status-select data-video-id="{{ video.id }}">
+            <option value="production" {% if video.status == 'production' %}selected{% endif %}>🎬 Em produção</option>
+            <option value="completed" {% if video.status == 'completed' %}selected{% endif %}>✅ Concluído</option>
+          </select>
+          <a href="{{ url_for('video_detail', video_id=video.id) }}" class="mini-link">Abrir →</a>
+        </div>
+      </article>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-card-list"><div>🎞️</div><h3>Nenhum card encontrado</h3><p>Crie um vídeo ou altere os filtros da busca.</p><button class="btn btn-primary" type="button" data-open-modal="videoModal">＋ Criar card</button></div>
+    {% endif %}
+  </div>
+
+  <aside class="planner-sidebar">
+    <section class="side-panel schedule-panel">
+      <div class="panel-title"><span>🗓️</span><div><small>RITMO DE POSTAGEM</small><h3>Próximas publicações</h3></div></div>
+      <div class="frequency-highlight"><strong>1 vídeo</strong><span>{{ projection.frequency_text }}</span></div>
+      <div class="frequency-rule-badge {{ projection.frequency_mode }}">{{ '📆 Intervalo entre datas' if projection.frequency_mode == 'interval' else '⏸️ Dias completos de pausa' }}</div>
+      <div class="planning-period-card">
+        <div><span>PERÍODO</span><strong>{{ projection.period_summary|capitalize }}</strong></div>
+        <div><span>DURAÇÃO</span><strong>{{ projection.period_days }} dias</strong></div>
+      </div>
+      <div class="month-estimate"><span>{{ projection.period_label }}</span><strong>{{ projection.count }} vídeos</strong></div>
+      <div class="calculation-formula">🧮 {{ projection.formula_text }} = <strong>{{ projection.count }} vídeos</strong></div>
+      <div class="date-list">
+        {% for item in upcoming %}<div class="date-item {% if loop.first %}next{% endif %}"><span>{{ item.strftime('%d') }}</span><div><strong>{{ item.strftime('%d/%m/%Y') }}</strong><small>{{ 'Próxima postagem' if loop.first else 'Postagem prevista' }}</small></div></div>{% endfor %}
+      </div>
+      <button class="btn btn-secondary full" type="button" data-open-modal="settingsModal">⚙️ Ajustar frequência</button>
+    </section>
+
+    <section class="side-panel title-panel">
+      <div class="panel-title"><span>💡</span><div><small>CONTROLE DE TÍTULOS</small><h3>Meta do canal</h3></div></div>
+      <div class="title-number"><strong>{{ stats.title_count }}</strong><span>títulos adicionados</span></div>
+      <div class="progress-head"><span>Banco preenchido</span><strong>{{ stats.title_count }}/{{ stats.goal }}</strong></div>
+      <div class="progress-track"><div class="progress-fill" style="width:{{ stats.title_progress }}%"></div></div>
+      <div class="remaining-box"><span>Ainda faltam no banco</span><strong>{{ stats.bank_remaining_titles }} títulos</strong></div>
+      <button class="btn btn-secondary full title-bank-button" type="button" data-open-modal="titlesModal">✍️ Abrir banco de títulos</button>
+    </section>
+  </aside>
+</section>
+
+
+<div class="modal" id="dailyGoalsModal" aria-hidden="true">
+  <div class="modal-backdrop" data-close-modal></div>
+  <div class="modal-dialog daily-goals-dialog">
+    <div class="modal-head">
+      <div><span class="eyebrow">CONTROLE DO DIA</span><h2>Configurar metas diárias</h2></div>
+      <button class="icon-button" type="button" data-close-modal>✕</button>
+    </div>
+    <div class="daily-goals-modal-intro">
+      <span class="daily-lever-icon">🎚️</span>
+      <div><strong>Defina seu ritmo de produção</strong><p>As barras começam em zero a cada novo dia. Elas são independentes da meta mensal, do calendário e do Banco de Títulos.</p></div>
+    </div>
+    <form action="{{ url_for('save_daily_goals', channel_id=channel.id) }}" method="post" class="form-grid daily-goals-form">
+      <label class="field">
+        <span>Meta de roteiros diários</span>
+        <div class="input-suffix"><input type="number" name="daily_script_goal" min="1" max="999" value="{{ daily_stats.script_goal }}" required><span>roteiros/dia</span></div>
+        <small class="field-help">Avança ao marcar “Roteiro pronto” em um card.</small>
+      </label>
+      <label class="field">
+        <span>Meta de vídeos diários</span>
+        <div class="input-suffix"><input type="number" name="daily_video_goal" min="1" max="999" value="{{ daily_stats.video_goal }}" required><span>vídeos/dia</span></div>
+        <small class="field-help">Avança ao mudar o card para “Concluído”.</small>
+      </label>
+      <div class="daily-goal-live-summary span-2">
+        <div><span>Roteiros feitos hoje</span><strong>{{ daily_stats.scripts_done }}</strong></div>
+        <div><span>Vídeos concluídos hoje</span><strong>{{ daily_stats.videos_done }}</strong></div>
+      </div>
+      <div class="modal-actions span-2">
+        <button type="button" class="btn btn-ghost" data-close-modal>Cancelar</button>
+        <button type="submit" class="btn btn-primary">💾 Salvar metas diárias</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="modal" id="titlesModal" aria-hidden="true">
+  <div class="modal-backdrop" data-close-modal></div>
+  <div class="modal-dialog titles-dialog">
+    <div class="modal-head">
+      <div><span class="eyebrow">BANCO DE TÍTULOS</span><h2>Adicionar títulos do canal</h2></div>
+      <button class="icon-button" type="button" data-close-modal>✕</button>
+    </div>
+    <div class="title-manager-summary">
+      <div>
+        <span>Meta configurada</span>
+        <strong>{{ stats.goal }} títulos</strong>
+      </div>
+      <div>
+        <span>Preenchidos</span>
+        <strong><b data-title-filled-count>{{ stats.title_count }}</b>/{{ stats.goal }}</strong>
+      </div>
+      <div>
+        <span>Restantes no banco</span>
+        <strong data-title-remaining-count>{{ stats.bank_remaining_titles }}</strong>
+      </div>
+    </div>
+    <div class="title-manager-progress">
+      <div class="progress-track"><div class="progress-fill" data-title-progress style="width:{{ stats.title_progress }}%"></div></div>
+      <small>Preencha os campos abaixo. A quantidade acompanha a meta definida nas configurações do canal.</small>
+    </div>
+    <div class="title-status-legend" aria-label="Legenda das cores dos títulos">
+      <span><i class="ready"></i> Roxo · Permitido para uso</span>
+      <span><i class="progress"></i> Amarelo · Em andamento</span>
+      <span><i class="completed"></i> Verde · Concluído</span>
+      <small>As cores são etiquetas de consulta e não alteram metas, barras, vídeos ou qualquer outro campo.</small>
+    </div>
+    <form action="{{ url_for('save_channel_titles', channel_id=channel.id) }}" method="post" class="title-manager-form">
+      <div class="title-fields-list" data-title-fields data-title-goal="{{ stats.goal }}">
+        {% for slot in title_slots %}
+        <div class="title-field-row title-status-{{ slot.status }}" data-title-row data-title-status="{{ slot.status }}">
+          <div class="title-status-column" data-title-status-box>
+            <div class="title-status-options" aria-label="Status do título {{ slot.position }}">
+              <button type="button" class="title-status-dot ready {% if slot.status == 'ready' %}active{% endif %}" data-title-status-option="ready" aria-label="Permitido para uso" aria-pressed="{{ 'true' if slot.status == 'ready' else 'false' }}" title="Permitido para uso"></button>
+              <button type="button" class="title-status-dot progress {% if slot.status == 'progress' %}active{% endif %}" data-title-status-option="progress" aria-label="Em andamento" aria-pressed="{{ 'true' if slot.status == 'progress' else 'false' }}" title="Em andamento"></button>
+              <button type="button" class="title-status-dot completed {% if slot.status == 'completed' %}active{% endif %}" data-title-status-option="completed" aria-label="Concluído" aria-pressed="{{ 'true' if slot.status == 'completed' else 'false' }}" title="Concluído"></button>
+            </div>
+            <span class="title-index">{{ '%02d'|format(slot.position) }}</span>
+            <small data-title-status-label>{{ 'Para uso' if slot.status == 'ready' else ('Em andamento' if slot.status == 'progress' else 'Concluído') }}</small>
+            <input type="hidden" name="title_statuses" value="{{ slot.status }}" data-title-status-input>
+          </div>
+          <label>
+            <span>Título {{ slot.position }}</span>
+            <textarea name="titles" rows="2" maxlength="500" placeholder="Digite o título planejado para o vídeo {{ slot.position }}">{{ slot.title }}</textarea>
+          </label>
+          <button class="icon-button clear-title-button" type="button" data-clear-title title="Limpar este título">⌫</button>
+        </div>
+        {% endfor %}
+      </div>
+      <div class="modal-actions title-manager-actions">
+        <button type="button" class="btn btn-ghost" data-close-modal>Cancelar</button>
+        <button type="submit" class="btn btn-primary">💾 Salvar títulos</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="modal" id="videoModal" aria-hidden="true">
+  <div class="modal-backdrop" data-close-modal></div>
+  <div class="modal-dialog large">
+    <div class="modal-head"><div><span class="eyebrow">NOVO CARD</span><h2>Adicionar vídeo</h2></div><button class="icon-button" type="button" data-close-modal>✕</button></div>
+    <form action="{{ url_for('create_video', channel_id=channel.id) }}" method="post" enctype="multipart/form-data" class="form-grid" data-cloud-upload-form>
+      <label class="field span-2"><span>Título do vídeo</span><input name="title" required placeholder="Digite o título planejado"></label>
+      <label class="field"><span>Status inicial</span><select name="status"><option value="production">🎬 Em produção</option><option value="completed">✅ Concluído</option></select></label>
+      <label class="field"><span>Data de publicação</span><input type="date" name="planned_date"></label>
+      <label class="field span-2"><span>Descrição ou observação</span><textarea name="description" rows="4" placeholder="Ideia, gancho, tema, observações..."></textarea></label>
+      <div class="field span-2">
+        <span>Foto de capa do card <small class="field-hint">opcional · recomendação 16:9</small></span>
+        <label class="cover-picker" for="newVideoCover">
+          <input id="newVideoCover" type="file" name="cover_image" accept="image/*" data-image-preview-input data-preview-target="newVideoCoverPreview">
+          <div class="cover-picker-preview" id="newVideoCoverPreview">
+            <img data-preview-image alt="Prévia da capa">
+            <div class="cover-picker-empty" data-preview-empty><span>🖼️</span><strong>Selecionar foto de capa</strong><small>JPG, PNG, WEBP ou GIF</small></div>
+            <div class="cover-picker-action">📷 Escolher imagem</div>
+          </div>
+        </label>
+      </div>
+      <div class="modal-actions span-2"><button type="button" class="btn btn-ghost" data-close-modal>Cancelar</button><button type="submit" class="btn btn-primary">🎬 Criar card</button></div>
+    </form>
+  </div>
+</div>
+
+<div class="modal" id="settingsModal" aria-hidden="true">
+  <div class="modal-backdrop" data-close-modal></div>
+  <div class="modal-dialog large">
+    <div class="modal-head"><div><span class="eyebrow">CONFIGURAÇÕES</span><h2>Editar canal e frequência</h2></div><button class="icon-button" type="button" data-close-modal>✕</button></div>
+    <form action="{{ url_for('edit_channel', channel_id=channel.id) }}" method="post" enctype="multipart/form-data" class="form-grid" data-cloud-upload-form>
+      <label class="field span-2"><span>Nome do canal</span><input name="name" value="{{ channel.name }}" required></label>
+      <label class="field span-2"><span>Descrição</span><textarea name="description" rows="3">{{ channel.description }}</textarea></label>
+      <label class="field"><span>Meta de títulos/vídeos</span><input type="number" name="title_goal" min="1" value="{{ channel.title_goal }}" required></label>
+      <div class="field span-2 frequency-config" data-frequency-config>
+        <span>Como calcular o ritmo de postagem?</span>
+        <div class="frequency-mode-options">
+          <label class="frequency-mode-option">
+            <input type="radio" name="frequency_mode" value="interval" {% if channel.frequency_mode == 'interval' %}checked{% endif %}>
+            <span><b>📆 Intervalo entre postagens</b><small>Ex.: 27, 29, 31 — dia sim, dia não.</small></span>
+          </label>
+          <label class="frequency-mode-option">
+            <input type="radio" name="frequency_mode" value="days_off" {% if channel.frequency_mode == 'days_off' %}checked{% endif %}>
+            <span><b>⏸️ Dias completos sem postar</b><small>Ex.: 27, 30, 02 — dois dias inteiros de pausa.</small></span>
+          </label>
+        </div>
+      </div>
+      <label class="field" data-frequency-value-field>
+        <span data-frequency-value-label>{{ 'Quantos dias completos sem postar?' if channel.frequency_mode == 'days_off' else 'Publicar a cada quantos dias?' }}</span>
+        <div class="input-suffix"><input type="number" name="interval_days" min="{{ 0 if channel.frequency_mode == 'days_off' else 1 }}" value="{{ channel.interval_days }}" required><span data-frequency-value-suffix>{{ 'dias sem postar' if channel.frequency_mode == 'days_off' else 'dias entre postagens' }}</span></div>
+        <small class="frequency-help" data-frequency-help></small>
+      </label>
+      <label class="field"><span>Data da primeira postagem</span><input type="date" name="start_date" value="{{ channel.start_date }}" required></label>
+      <div class="field span-2 period-config" data-period-config>
+        <span>Como definir o período do planejamento?</span>
+        <div class="period-mode-options">
+          <label class="period-mode-option">
+            <input type="radio" name="period_mode" value="months" {% if channel.period_mode == 'months' %}checked{% endif %}>
+            <span><b>🗓️ Mês(es) completo(s)</b><small>27/07 + 1 mês termina exatamente em 27/08.</small></span>
+          </label>
+          <label class="period-mode-option">
+            <input type="radio" name="period_mode" value="days" {% if channel.period_mode == 'days' %}checked{% endif %}>
+            <span><b>🔢 Quantidade exata de dias</b><small>Ex.: 36 dias inclui de 27/07 até 31/08.</small></span>
+          </label>
+          <label class="period-mode-option">
+            <input type="radio" name="period_mode" value="month_end" {% if channel.period_mode == 'month_end' %}checked{% endif %}>
+            <span><b>📅 Até o fim de um mês</b><small>Ex.: escolher agosto calcula até 31/08.</small></span>
+          </label>
+        </div>
+      </div>
+      <label class="field" data-period-value-field>
+        <span data-period-value-label>{{ 'Quantidade exata de dias' if channel.period_mode == 'days' else 'Quantidade de meses completos' }}</span>
+        <div class="input-suffix"><input type="number" name="period_value" min="1" max="{{ 7300 if channel.period_mode == 'days' else 120 }}" value="{{ channel.period_value }}" required data-period-value><span data-period-value-suffix>{{ 'dias' if channel.period_mode == 'days' else ('meses' if channel.period_value != 1 else 'mês') }}</span></div>
+        <small class="field-help" data-period-value-help></small>
+      </label>
+      <label class="field" data-planning-month-field {% if channel.period_mode != 'month_end' %}hidden{% endif %}>
+        <span>Mês final do planejamento</span>
+        <input type="month" name="planning_month" value="{{ channel.planning_month }}" data-planning-month>
+        <small class="field-help">A agenda vai até o último dia do mês escolhido.</small>
+      </label>
+      <div class="period-preview span-2" data-period-help></div>
+      <label class="field file-field"><span>Trocar imagem</span><input type="file" name="image" accept="image/*"></label>
+      <div class="modal-actions span-2"><button type="button" class="btn btn-ghost" data-close-modal>Cancelar</button><button type="submit" class="btn btn-primary">💾 Salvar alterações</button></div>
+    </form>
+    <form action="{{ url_for('delete_channel', channel_id=channel.id) }}" method="post" class="danger-zone" data-confirm="Excluir este canal e todos os seus cards e arquivos?">
+      <div><strong>Excluir canal</strong><span>Esta ação remove cards, textos e anexos.</span></div><button class="btn btn-danger" type="submit">🗑️ Excluir</button>
+    </form>
+  </div>
+</div>
+{% endblock %}

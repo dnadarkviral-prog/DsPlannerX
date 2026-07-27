@@ -1,0 +1,12 @@
+{
+  "name": "ds-plannerx-vercel",
+  "version": "2.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@vercel/blob": "2.3.2"
+  }
+}

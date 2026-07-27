@@ -1,0 +1,3 @@
+{% extends 'base.html' %}
+{% block page_title %}Página não encontrada{% endblock %}
+{% block content %}<section class="empty-state"><div class="empty-emoji">🛰️</div><h2>Este item não existe</h2><p>Ele pode ter sido removido ou o endereço está incorreto.</p><a class="btn btn-primary" href="{{ url_for('dashboard') }}">Voltar ao painel</a></section>{% endblock %}

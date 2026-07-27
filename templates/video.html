@@ -1,0 +1,102 @@
+{% extends 'base.html' %}
+{% block title %}{{ video.title }} — DS - PLANNERX{% endblock %}
+{% block page_title %}Card de produção{% endblock %}
+{% block topbar_actions %}
+<a class="btn btn-ghost" href="{{ url_for('channel_detail', channel_id=video.channel_id) }}">← Voltar ao canal</a>
+{% endblock %}
+
+{% block content %}
+<section class="video-detail-header">
+  <div class="video-detail-identity">
+    <div class="video-detail-thumb {% if video.cover_image_path %}with-image{% endif %}">
+      {% if video.cover_image_path %}<img src="{{ video.cover_image_path|asset_url }}" alt="Capa de {{ video.title }}">{% else %}<span>🖼️</span>{% endif %}
+    </div>
+    <div class="video-detail-title"><span class="status-chip {{ video.status }}">{{ '✅' if video.status == 'completed' else '🎬' }} {{ status_labels[video.status] }}</span><h2>{{ video.title }}</h2><p>Canal: <strong>{{ video.channel_name }}</strong></p></div>
+  </div>
+  <div class="video-header-actions">
+    <button class="script-ready-toggle detail-toggle {% if video.script_completed_at %}ready{% endif %}" type="button" data-script-ready data-video-id="{{ video.id }}" data-ready="{{ 'true' if video.script_completed_at else 'false' }}" title="Marcar ou desmarcar o roteiro como pronto">
+      <span>{{ '✅' if video.script_completed_at else '📜' }}</span><b>{{ 'Roteiro pronto' if video.script_completed_at else 'Marcar roteiro pronto' }}</b>
+    </button>
+    <div class="planned-date-box"><span>📅 Publicação planejada</span><strong>{{ video.planned_date|date_br if video.planned_date else 'Não definida' }}</strong></div>
+  </div>
+</section>
+
+<section class="detail-layout">
+  <div class="detail-main">
+    <section class="content-panel">
+      <div class="panel-heading"><div><span class="eyebrow">INFORMAÇÕES</span><h3>Detalhes do vídeo</h3></div><span class="panel-emoji">🧩</span></div>
+      <form action="{{ url_for('edit_video', video_id=video.id) }}" method="post" enctype="multipart/form-data" class="form-grid" data-cloud-upload-form>
+        <label class="field span-2"><span>Título</span><input name="title" value="{{ video.title }}" required></label>
+        <label class="field"><span>Status</span><select name="status"><option value="production" {% if video.status == 'production' %}selected{% endif %}>🎬 Em produção</option><option value="completed" {% if video.status == 'completed' %}selected{% endif %}>✅ Concluído</option></select></label>
+        <label class="field"><span>Data planejada</span><input type="date" name="planned_date" value="{{ video.planned_date or '' }}"></label>
+        <label class="field span-2"><span>Descrição / briefing</span><textarea name="description" rows="6" placeholder="Tema, gancho, direcionamento, observações...">{{ video.description }}</textarea></label>
+        <div class="field span-2">
+          <span>Foto de capa do card <small class="field-hint">recomendação 16:9</small></span>
+          <div class="cover-editor">
+            <label class="cover-picker" for="editVideoCover">
+              <input id="editVideoCover" type="file" name="cover_image" accept="image/*" data-image-preview-input data-preview-target="editVideoCoverPreview">
+              <div class="cover-picker-preview {% if video.cover_image_path %}has-preview{% endif %}" id="editVideoCoverPreview">
+                <img data-preview-image alt="Prévia da capa" {% if video.cover_image_path %}src="{{ video.cover_image_path|asset_url }}"{% endif %}>
+                <div class="cover-picker-empty" data-preview-empty {% if video.cover_image_path %}hidden{% endif %}><span>🖼️</span><strong>Selecionar foto de capa</strong><small>JPG, PNG, WEBP ou GIF</small></div>
+                <div class="cover-picker-action">📷 {{ 'Trocar imagem' if video.cover_image_path else 'Escolher imagem' }}</div>
+              </div>
+            </label>
+            <div class="cover-editor-info">
+              <strong>{{ 'Capa atual adicionada' if video.cover_image_path else 'Este card ainda não possui capa' }}</strong>
+              <span>A imagem aparece em formato 16:9 na grade de vídeos.</span>
+              {% if video.cover_image_path %}<label class="remove-cover-check"><input type="checkbox" name="remove_cover" value="1"> Remover a capa atual ao salvar</label>{% endif %}
+            </div>
+          </div>
+        </div>
+        <div class="form-actions span-2"><button type="submit" class="btn btn-primary">💾 Salvar card</button></div>
+      </form>
+    </section>
+
+    <section class="content-panel">
+      <div class="panel-heading"><div><span class="eyebrow">CAMPOS PERSONALIZADOS</span><h3>Textos e anotações</h3></div><span class="panel-emoji">✍️</span></div>
+      <form action="{{ url_for('add_text_field', video_id=video.id) }}" method="post" class="new-text-form">
+        <input name="label" placeholder="Nome do campo: Roteiro, Descrição, Prompt..." required>
+        <textarea name="content" rows="4" placeholder="Digite ou cole o texto aqui..."></textarea>
+        <button class="btn btn-secondary" type="submit">＋ Adicionar campo de texto</button>
+      </form>
+      {% if texts %}<div class="text-field-list">
+        {% for text in texts %}
+        <article class="text-field-card">
+          <form action="{{ url_for('edit_text_field', text_id=text.id) }}" method="post">
+            <div class="text-card-head"><input name="label" value="{{ text.label }}"><button class="btn btn-small" type="submit">Salvar</button></div>
+            <textarea name="content" rows="8">{{ text.content }}</textarea>
+          </form>
+          <form action="{{ url_for('delete_text_field', text_id=text.id) }}" method="post" data-confirm="Remover este campo de texto?"><button class="text-delete" type="submit">🗑️ Remover campo</button></form>
+        </article>
+        {% endfor %}
+      </div>{% else %}<div class="mini-empty">🗒️ Crie campos para roteiro, descrição, prompts, checklist ou qualquer texto.</div>{% endif %}
+    </section>
+  </div>
+
+  <aside class="detail-side">
+    <section class="content-panel sticky-panel">
+      <div class="panel-heading"><div><span class="eyebrow">ARQUIVOS</span><h3>Anexos do vídeo</h3></div><span class="panel-emoji">📎</span></div>
+      <form action="{{ url_for('upload_attachments', video_id=video.id) }}" method="post" enctype="multipart/form-data" class="upload-zone" data-cloud-upload-form>
+        <input id="files" type="file" name="files" multiple accept="video/*,audio/*,image/*,.txt,.md,.srt,.pdf" required>
+        <label for="files"><span class="upload-emoji">☁️</span><strong>Selecionar arquivos</strong><small>Vídeo, áudio, imagem, TXT, SRT ou PDF</small></label>
+        <div class="selected-files" data-selected-files>Nenhum arquivo selecionado</div>
+        <button class="btn btn-primary full" type="submit">⬆️ Anexar arquivos</button>
+      </form>
+
+      {% if attachments %}<div class="attachment-list">
+        {% for item in attachments %}
+        <article class="attachment-card">
+          <a href="{{ item.stored_name|asset_url }}" target="_blank" class="attachment-main">
+            <span class="attachment-icon">{{ {'video':'🎥','audio':'🎧','image':'🖼️','pdf':'📕','text':'📄'}[item.file_type] }}</span>
+            <div><strong title="{{ item.original_name }}">{{ item.original_name }}</strong><small>{{ item.file_type|upper }} · {{ item.size_bytes|filesize }}</small></div>
+          </a>
+          <form action="{{ url_for('delete_attachment', attachment_id=item.id) }}" method="post" data-confirm="Excluir este anexo?"><button type="submit" class="icon-button danger">✕</button></form>
+        </article>
+        {% endfor %}
+      </div>{% else %}<div class="mini-empty">📂 Ainda não há arquivos anexados neste card.</div>{% endif %}
+    </section>
+
+    <form action="{{ url_for('delete_video', video_id=video.id) }}" method="post" class="delete-card-box" data-confirm="Excluir este card e todos os anexos e textos?"><div><strong>Excluir card</strong><span>Remove todos os dados deste vídeo.</span></div><button class="btn btn-danger" type="submit">🗑️ Excluir</button></form>
+  </aside>
+</section>
+{% endblock %}

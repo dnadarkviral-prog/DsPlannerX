@@ -1,0 +1,38 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/blob-upload.js",
+      "use": "@vercel/node"
+    },
+    {
+      "src": "api/blob-delete.js",
+      "use": "@vercel/node"
+    },
+    {
+      "src": "app.py",
+      "use": "@vercel/python",
+      "config": {
+        "includeFiles": [
+          "templates/**",
+          "static/**"
+        ]
+      }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/blob-upload",
+      "dest": "/api/blob-upload.js"
+    },
+    {
+      "src": "/api/blob-delete",
+      "dest": "/api/blob-delete.js"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/app.py"
+    }
+  ]
+}
