@@ -1046,20 +1046,31 @@ def schedule_date_items(db: Any, channel_id: int, dates: list[date]) -> list[dic
 
 
 def month_calendar(db: Any, channel_id: int, year: int) -> list[dict[str, Any]]:
-    """Retorna somente os meses que já possuem planejamento personalizado."""
-    rows = db.execute(
-        """SELECT mp.year_month, mp.notes,
-        (SELECT COUNT(*) FROM schedule_rules sr WHERE sr.channel_id = mp.channel_id AND sr.year_month = mp.year_month) AS rule_count,
-        (SELECT COUNT(*) FROM videos v WHERE v.channel_id = mp.channel_id AND v.planned_date LIKE mp.year_month || '-%') AS video_count
-        FROM monthly_plans mp
-        WHERE mp.channel_id = ? AND mp.year_month LIKE ?
-        ORDER BY mp.year_month""",
+    """Retorna somente os meses salvos, usando SQL simples em SQLite e Postgres.
+
+    A versão anterior usava subconsultas correlacionadas e concatenação dentro de
+    LIKE. Embora válidas em muitos cenários, elas causaram erro em algumas bases
+    Neon já existentes. Consultas separadas são mais previsíveis e não alteram
+    nenhuma tabela ou dado cadastrado.
+    """
+    plans = db.execute(
+        "SELECT year_month, notes FROM monthly_plans WHERE channel_id = ? AND year_month LIKE ? ORDER BY year_month",
         (channel_id, f"{year:04d}-%"),
     ).fetchall()
     result: list[dict[str, Any]] = []
-    for row in rows:
-        year_month = str(row["year_month"])
+    for plan in plans:
+        year_month = str(plan["year_month"] or "").strip()
+        if not year_month:
+            continue
         _, month = parse_year_month(year_month)
+        video_row = db.execute(
+            "SELECT COUNT(*) AS total FROM videos WHERE channel_id = ? AND planned_date LIKE ?",
+            (channel_id, f"{year_month}-%"),
+        ).fetchone()
+        rule_row = db.execute(
+            "SELECT COUNT(*) AS total FROM schedule_rules WHERE channel_id = ? AND year_month = ?",
+            (channel_id, year_month),
+        ).fetchone()
         dates = custom_schedule_dates(db, channel_id, year_month)
         result.append({
             "year_month": year_month,
@@ -1067,10 +1078,10 @@ def month_calendar(db: Any, channel_id: int, year: int) -> list[dict[str, Any]]:
             "name": MONTH_NAMES_PT[month],
             "month": month,
             "has_plan": True,
-            "video_count": int(row["video_count"] or 0),
-            "rule_count": int(row["rule_count"] or 0),
+            "video_count": int(video_row["total"] or 0) if video_row else 0,
+            "rule_count": int(rule_row["total"] or 0) if rule_row else 0,
             "date_count": len(dates),
-            "notes": str(row["notes"] or ""),
+            "notes": str(plan["notes"] or ""),
             "is_current": year == today_local().year and month == today_local().month,
         })
     return result
@@ -1397,7 +1408,7 @@ def health():
         "ok": not CONFIG_ERRORS,
         "database": "postgres" if USE_POSTGRES else "sqlite",
         "storage": "vercel-blob" if BLOB_ENABLED else "local",
-        "version": "2.4.2-safe-vercel",
+        "version": "2.4.3-safe-channel-fix",
     }
 
 
@@ -1555,8 +1566,30 @@ def channel_detail(request: Request, channel_id: int, status: str = "all", q: st
         projection = channel_projection(db, channel)
         upcoming = schedule_date_items(db, channel_id, projection["dates"])
         calendar_year = min(max(int(year or today_local().year), 2020), 2100)
-        month_cards = month_calendar(db, channel_id, calendar_year)
-        custom_plans = custom_plans_payload(db, channel_id)
+
+        # O calendário personalizado é um recurso complementar. Se uma base
+        # antiga tiver algum dado mensal inesperado, o canal principal continua
+        # abrindo normalmente em vez de retornar Internal Server Error.
+        month_cards: list[dict[str, Any]] = []
+        custom_plans: list[dict[str, Any]] = []
+        try:
+            month_cards = month_calendar(db, channel_id, calendar_year)
+        except Exception as exc:
+            db.rollback()
+            print(
+                f"[DS-PLANNERX] Falha ao carregar calendário do canal {channel_id}: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+        try:
+            custom_plans = custom_plans_payload(db, channel_id)
+        except Exception as exc:
+            db.rollback()
+            print(
+                f"[DS-PLANNERX] Falha ao carregar planejamentos do canal {channel_id}: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
     context = template_context(
         request,
         channel=channel,
