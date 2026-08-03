@@ -55,14 +55,18 @@ Não envie arquivos `.env`, bancos SQLite, pastas de ambiente virtual ou credenc
 Substitua os arquivos do repositório e faça o commit normalmente. Não apague nem troque `DATABASE_URL`, o banco Neon ou o Blob Store já conectados. O primeiro acesso após o deploy executa apenas comandos `CREATE TABLE IF NOT EXISTS` e `ADD COLUMN IF NOT EXISTS`.
 
 
-## Atualização v2.4.1 — nomenclatura clara dos períodos de postagem
+## Atualização v2.4.2 segura — planejamento mensal dentro das configurações
 
 - O modo **Personalizado por mês** agora é montado diretamente na janela **Configurar**.
-- Escolha o mês, adicione informações e crie quantos períodos de postagem forem necessários.
+- Escolha o mês, adicione informações e crie quantas semanas ou trechos forem necessários.
 - Botão **Gerar semanas** cria automaticamente os blocos do mês para edição individual.
 - O resumo mostra todas as datas unificadas e a quantidade final de vídeos antes de salvar.
 - O calendário do canal mostra somente os meses que realmente foram configurados.
 - Cada mês abre uma área própria com o mesmo layout de cards do canal, inicialmente limpa, para criar apenas os vídeos daquele mês.
 - Planejamentos existentes podem ser reabertos, editados ou removidos sem excluir os cards de vídeo.
 - Migração incremental: adiciona apenas o campo de identificação das regras e preserva todos os dados já salvos.
-- O termo **Trecho** foi substituído por **Período de postagem** em botões, avisos, resumos e planejamentos já existentes.
+
+
+## Atualização segura v2.4.2
+
+Esta edição usa exatamente a estrutura de banco da versão estável v2.3.1. O planejamento personalizado foi reorganizado no código e no layout sem adicionar, remover ou renomear colunas no Neon. Os períodos são numerados automaticamente na interface.

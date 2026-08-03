@@ -306,7 +306,6 @@ def init_postgres_db() -> None:
             id BIGSERIAL PRIMARY KEY,
             channel_id BIGINT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
             year_month TEXT NOT NULL,
-            label TEXT NOT NULL DEFAULT '',
             start_date TEXT NOT NULL,
             end_date TEXT NOT NULL,
             frequency_mode TEXT NOT NULL DEFAULT 'interval',
@@ -344,7 +343,6 @@ def init_postgres_db() -> None:
         "ALTER TABLE channels ADD COLUMN IF NOT EXISTS daily_video_goal INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE channels ADD COLUMN IF NOT EXISTS schedule_mode TEXT NOT NULL DEFAULT 'standard'",
         "ALTER TABLE channel_titles ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ready'",
-        "ALTER TABLE schedule_rules ADD COLUMN IF NOT EXISTS label TEXT NOT NULL DEFAULT ''",
     ]
     last_error: Exception | None = None
     for attempt in range(1, 4):
@@ -362,7 +360,6 @@ def init_postgres_db() -> None:
                 db.execute("UPDATE channels SET schedule_mode = 'standard' WHERE schedule_mode IS NULL OR schedule_mode NOT IN ('standard', 'custom')")
                 db.execute("UPDATE channels SET frequency_mode = 'interval' WHERE frequency_mode IS NULL OR frequency_mode NOT IN ('interval', 'days_off')")
                 db.execute("UPDATE channel_titles SET status = 'ready' WHERE status IS NULL OR status NOT IN ('ready', 'progress', 'completed')")
-                db.execute("UPDATE schedule_rules SET label = REPLACE(label, 'Trecho ', 'Período ') WHERE label LIKE 'Trecho %'")
                 db.commit()
                 return
             except Exception as exc:
@@ -539,11 +536,6 @@ def init_sqlite_db() -> None:
             "UPDATE channel_titles SET status = 'ready' "
             "WHERE status IS NULL OR status NOT IN ('ready', 'progress', 'completed')"
         )
-
-        rule_columns = {row["name"] for row in db.execute("PRAGMA table_info(schedule_rules)").fetchall()}
-        if "label" not in rule_columns:
-            db.execute("ALTER TABLE schedule_rules ADD COLUMN label TEXT NOT NULL DEFAULT ''")
-        db.execute("UPDATE schedule_rules SET label = REPLACE(label, 'Trecho ', 'Período ') WHERE label LIKE 'Trecho %'")
 
         # Migração para o novo período explícito. A versão anterior misturava
         # "mês final" com "quantidade de dias", o que fazia 1 mês virar 30 dias.
@@ -1108,7 +1100,6 @@ def custom_plans_payload(db: Any, channel_id: int) -> list[dict[str, Any]]:
             "rules": [
                 {
                     "id": int(rule["id"]),
-                    "label": str(rule["label"] or "") if "label" in rule.keys() else "",
                     "start_date": str(rule["start_date"]),
                     "end_date": str(rule["end_date"]),
                     "frequency_mode": normalize_frequency_mode(rule["frequency_mode"]),
@@ -1406,7 +1397,7 @@ def health():
         "ok": not CONFIG_ERRORS,
         "database": "postgres" if USE_POSTGRES else "sqlite",
         "storage": "vercel-blob" if BLOB_ENABLED else "local",
-        "version": "2.4.1-vercel",
+        "version": "2.4.2-safe-vercel",
     }
 
 
@@ -2071,13 +2062,12 @@ async def save_custom_month_plan(request: Request, channel_id: int):
     upper = date(year, month, calendar.monthrange(year, month)[1])
     notes = str(form.get("notes") or "").strip()[:4000]
 
-    labels = [str(value).strip()[:120] for value in form.getlist("rule_labels")]
     starts = [str(value).strip() for value in form.getlist("rule_start_dates")]
     ends = [str(value).strip() for value in form.getlist("rule_end_dates")]
     modes = [str(value).strip() for value in form.getlist("rule_frequency_modes")]
     intervals = [str(value).strip() for value in form.getlist("rule_interval_days")]
-    total_rows = max(len(starts), len(ends), len(modes), len(intervals), len(labels))
-    parsed_rules: list[tuple[str, date, date, str, int]] = []
+    total_rows = max(len(starts), len(ends), len(modes), len(intervals))
+    parsed_rules: list[tuple[date, date, str, int]] = []
 
     for index in range(total_rows):
         start_raw = starts[index] if index < len(starts) else ""
@@ -2105,8 +2095,7 @@ async def save_custom_month_plan(request: Request, channel_id: int):
         mode = normalize_frequency_mode(modes[index] if index < len(modes) else "interval")
         raw_interval = intervals[index] if index < len(intervals) else "1"
         interval = normalize_frequency_value(raw_interval, mode)
-        label = labels[index] if index < len(labels) else ""
-        parsed_rules.append((label or f"Período {index + 1}", start_date, end_date, mode, interval))
+        parsed_rules.append((start_date, end_date, mode, interval))
 
     if not parsed_rules:
         return redirect_to(
@@ -2124,13 +2113,13 @@ async def save_custom_month_plan(request: Request, channel_id: int):
             (channel_id, normalized_month, notes, timestamp, timestamp),
         )
         db.execute("DELETE FROM schedule_rules WHERE channel_id = ? AND year_month = ?", (channel_id, normalized_month))
-        for label, start_date, end_date, mode, interval in parsed_rules:
+        for start_date, end_date, mode, interval in parsed_rules:
             db.execute(
                 """INSERT INTO schedule_rules (
-                    channel_id, year_month, label, start_date, end_date, frequency_mode, interval_days, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    channel_id, year_month, start_date, end_date, frequency_mode, interval_days, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    channel_id, normalized_month, label, start_date.isoformat(), end_date.isoformat(),
+                    channel_id, normalized_month, start_date.isoformat(), end_date.isoformat(),
                     mode, interval, timestamp, timestamp,
                 ),
             )

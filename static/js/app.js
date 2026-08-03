@@ -534,12 +534,10 @@
       const fragment = ruleTemplate.content.cloneNode(true);
       const row = fragment.querySelector('[data-custom-rule-row]');
       const bounds = monthBounds(monthInput.value);
-      const label = row.querySelector('input[name="rule_labels"]');
       const start = row.querySelector('input[name="rule_start_dates"]');
       const end = row.querySelector('input[name="rule_end_dates"]');
       const mode = row.querySelector('select[name="rule_frequency_modes"]');
       const value = row.querySelector('input[name="rule_interval_days"]');
-      if (label) label.value = data.label || '';
       if (start) {
         start.min = isoLocalDate(bounds.first);
         start.max = isoLocalDate(bounds.last);
@@ -577,7 +575,6 @@
         const start = new Date(bounds.first.getFullYear(), bounds.first.getMonth(), startDay, 12);
         const end = new Date(bounds.first.getFullYear(), bounds.first.getMonth(), endDay, 12);
         addRule({
-          label: `Semana ${week}`,
           start_date: isoLocalDate(start),
           end_date: isoLocalDate(end),
           frequency_mode: 'interval',
@@ -601,7 +598,7 @@
       updateCustomSummary();
     };
 
-    addRuleButton?.addEventListener('click', () => addRule({ label: `Período ${rulesList.children.length + 1}` }));
+    addRuleButton?.addEventListener('click', () => addRule({}));
     generateWeeksButton?.addEventListener('click', generateWeeks);
     monthInput.addEventListener('change', () => loadPlan(monthInput.value, false));
     builder.addEventListener('submit', (event) => {

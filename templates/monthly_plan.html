@@ -92,7 +92,7 @@
       {% if rules %}
       <div class="month-rule-summary-list">
         {% for rule in rules %}
-        <div><b>{{ rule.label or ('Período ' ~ loop.index) }}</b><span>{{ rule.start_date|date_br }} → {{ rule.end_date|date_br }}</span></div>
+        <div><b>Período {{ loop.index }}</b><span>{{ rule.start_date|date_br }} → {{ rule.end_date|date_br }}</span></div>
         {% endfor %}
       </div>
       {% endif %}
