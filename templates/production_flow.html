@@ -1,0 +1,72 @@
+{% extends 'base.html' %}
+{% block title %}DS-PLANNERX · Fluxo de Produção{% endblock %}
+{% block page_title %}Fluxo de Produção{% endblock %}
+{% block topbar_actions %}{% if selected_channel %}<a class="btn btn-secondary" href="{{ url_for('channel_detail', channel_id=selected_channel.id) }}">Abrir canal →</a>{% endif %}{% endblock %}
+
+{% block content %}
+<section class="flow-intro">
+  <div><span class="eyebrow">HISTÓRICO OPERACIONAL</span><h2>Registre o que foi feito no dia</h2><p>Cada lançamento de “Roteiro pronto” ou “Vídeo concluído” alimenta as metas diárias do canal selecionado.</p></div>
+  <div class="flow-badge">⚙️ CONTROLE MANUAL</div>
+</section>
+
+{% if channels %}
+<section class="flow-toolbar panel-card">
+  <form method="get" class="flow-filter-form">
+    <label class="field"><span>Canal</span><select name="channel_id" onchange="this.form.submit()">{% for channel in channels %}<option value="{{ channel.id }}" {% if selected_channel and channel.id == selected_channel.id %}selected{% endif %}>{{ channel.name }}</option>{% endfor %}</select></label>
+    <label class="field"><span>Mês do histórico</span><input type="month" name="month" value="{{ selected_month }}" onchange="this.form.submit()"></label>
+  </form>
+  <div class="flow-month-chips">
+    {% for item in available_months %}<a class="{% if item == selected_month %}active{% endif %}" href="{{ url_for('production_flow') }}?channel_id={{ selected_channel.id }}&month={{ item }}">{{ item[5:7] }}/{{ item[:4] }}</a>{% endfor %}
+  </div>
+</section>
+
+<section class="flow-layout">
+  <div class="flow-main">
+    <section class="panel-card">
+      <div class="section-heading inline compact-heading"><div><span class="eyebrow">NOVO LANÇAMENTO</span><h2>Adicionar atividade</h2></div></div>
+      <form action="{{ url_for('add_production_log') }}" method="post" class="form-grid">
+        <input type="hidden" name="channel_id" value="{{ selected_channel.id }}">
+        <label class="field"><span>Mês do histórico</span><input type="month" name="history_month" value="{{ selected_month }}" required></label>
+        <label class="field"><span>Data da atividade</span><input type="date" name="work_date" value="{{ default_work_date }}" required></label>
+        <label class="field span-2"><span>Título do vídeo</span><input name="video_title" placeholder="Ex.: Minha filha vendeu a casa sem me avisar..." required></label>
+        <label class="field"><span>Nome do operador</span><input name="operator_name" placeholder="Quem realizou a tarefa" required></label>
+        <label class="field"><span>Status realizado</span><select name="status"><option value="script_ready">📜 Roteiro pronto</option><option value="video_completed">🎬 Vídeo concluído</option></select></label>
+        <div class="modal-actions span-2"><button class="btn btn-primary" type="submit">＋ Registrar no fluxo</button></div>
+      </form>
+    </section>
+
+    {% if grouped_logs %}
+      {% for group in grouped_logs %}
+      <section class="flow-day panel-card {% if group.stats.scripts_complete and group.stats.videos_complete %}goal-reached{% endif %}">
+        <div class="flow-day-head">
+          <div><span>{{ group.date_br }}</span><h3>{{ group.entries|length }} atividade{{ 's' if group.entries|length != 1 else '' }}</h3></div>
+          <div class="flow-day-goals"><b>📜 {{ group.stats.scripts_done }}/{{ group.stats.script_goal }}</b><b>🎬 {{ group.stats.videos_done }}/{{ group.stats.video_goal }}</b>{% if group.stats.scripts_complete or group.stats.videos_complete %}<em>🏆 META ALCANÇADA</em>{% endif %}</div>
+        </div>
+        <div class="flow-entry-list">
+          {% for entry in group.entries %}
+          <article class="flow-entry">
+            <span class="flow-status {{ entry.status }}">{{ '📜' if entry.status == 'script_ready' else '🎬' }}</span>
+            <div><strong>{{ entry.video_title }}</strong><small>{{ production_status_labels[entry.status] }} · Operador: {{ entry.operator_name }}</small></div>
+            <form action="{{ url_for('delete_production_log', log_id=entry.id) }}" method="post" data-confirm="Remover este lançamento do histórico?"><button class="icon-button" type="submit">🗑️</button></form>
+          </article>
+          {% endfor %}
+        </div>
+      </section>
+      {% endfor %}
+    {% else %}
+      <section class="empty-state compact-empty"><div class="empty-emoji">⚙️</div><h2>Nenhuma atividade neste mês</h2><p>Registre o primeiro roteiro ou vídeo concluído para criar o histórico de {{ selected_month[5:7] }}/{{ selected_month[:4] }}.</p></section>
+    {% endif %}
+  </div>
+
+  <aside class="flow-side">
+    <section class="side-panel">
+      <div class="panel-title"><span>🎯</span><div><small>METAS DO CANAL</small><h3>{{ selected_channel.name }}</h3></div></div>
+      <p class="flow-help">Os lançamentos manuais somam com as marcações feitas nos cards. Ao atingir a meta do dia, o PlannerX exibe um troféu e uma mensagem diferente.</p>
+      <a class="btn btn-secondary full" href="{{ url_for('channel_detail', channel_id=selected_channel.id) }}">Ver metas diárias</a>
+    </section>
+  </aside>
+</section>
+{% else %}
+<section class="empty-state"><div class="empty-emoji">📺</div><h2>Cadastre um canal primeiro</h2><p>O Fluxo de Produção precisa estar associado a um canal e às metas diárias dele.</p><button class="btn btn-primary" type="button" data-open-modal="channelModal">＋ Criar canal</button></section>
+{% endif %}
+{% endblock %}

@@ -15,6 +15,28 @@
     if (!document.querySelector('.modal.open')) document.body.classList.remove('modal-open');
   };
 
+  const closeCelebration = (root, reloadAfter = false) => {
+    root?.classList.remove('open');
+    setTimeout(() => root?.remove(), 220);
+    if (reloadAfter) window.location.reload();
+  };
+
+  const showCelebration = (payload, reloadAfter = false) => {
+    if (!payload) return false;
+    document.querySelector('[data-goal-celebration]')?.remove();
+    const root = document.createElement('div');
+    root.className = 'goal-celebration open';
+    root.dataset.goalCelebration = '';
+    root.innerHTML = `<div class="goal-celebration-backdrop"></div><div class="goal-celebration-card"><button type="button" class="goal-celebration-close">✕</button><div class="goal-trophy">${payload.emoji || '🏆'}</div><span>${payload.title || 'META ALCANÇADA'}</span><h2>${payload.message || 'Parabéns! Meta alcançada.'}</h2><button type="button" class="btn btn-primary">Continuar produzindo 🚀</button></div>`;
+    document.body.appendChild(root);
+    root.querySelectorAll('button, .goal-celebration-backdrop').forEach((item) => item.addEventListener('click', () => closeCelebration(root, reloadAfter)));
+    return true;
+  };
+
+  document.querySelectorAll('[data-close-celebration]').forEach((button) => {
+    button.addEventListener('click', () => closeCelebration(button.closest('[data-goal-celebration]')));
+  });
+
   document.querySelectorAll('[data-open-modal]').forEach((button) => {
     button.addEventListener('click', () => openModal(button.dataset.openModal));
   });
@@ -42,8 +64,9 @@
           body: JSON.stringify({ status: select.value }),
         });
         if (!response.ok) throw new Error('Não foi possível atualizar');
+        const result = await response.json();
         select.className = `status-select ${select.value}`;
-        setTimeout(() => window.location.reload(), 220);
+        if (!showCelebration(result.celebration, true)) setTimeout(() => window.location.reload(), 220);
       } catch (error) {
         select.value = prior;
         window.alert(error.message);
@@ -73,7 +96,34 @@
         if (label) label.textContent = result.ready
           ? 'Roteiro pronto'
           : (button.classList.contains('detail-toggle') ? 'Marcar roteiro pronto' : 'Marcar roteiro');
-        setTimeout(() => window.location.reload(), 180);
+        if (!showCelebration(result.celebration, true)) setTimeout(() => window.location.reload(), 180);
+      } catch (error) {
+        window.alert(error.message);
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+
+  document.querySelectorAll('[data-published-toggle]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const current = button.dataset.published === 'true';
+      button.disabled = true;
+      try {
+        const response = await fetch(`/api/videos/${button.dataset.videoId}/published`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ published: !current }),
+        });
+        if (!response.ok) throw new Error('Não foi possível atualizar a publicação');
+        const result = await response.json();
+        button.dataset.published = result.published ? 'true' : 'false';
+        button.classList.toggle('published', result.published);
+        const icon = button.querySelector('span');
+        const label = button.querySelector('b');
+        if (icon) icon.textContent = result.published ? '🟢' : '📡';
+        if (label) label.textContent = result.published ? 'Publicado' : 'Marcar publicado';
+        setTimeout(() => window.location.reload(), 160);
       } catch (error) {
         window.alert(error.message);
       } finally {
@@ -177,6 +227,21 @@
     const endUtc = Date.UTC(end.getFullYear(), end.getMonth(), end.getDate());
     return Math.round((endUtc - startUtc) / 86400000);
   };
+
+  document.querySelectorAll('[data-schedule-mode-config]').forEach((config) => {
+    const form = config.closest('form');
+    if (!form) return;
+    const radios = [...form.querySelectorAll('input[name="schedule_mode"]')];
+    const standardFields = form.querySelector('[data-standard-schedule-fields]');
+    const hint = form.querySelector('[data-custom-mode-hint]');
+    const update = () => {
+      const custom = radios.find((radio) => radio.checked)?.value === 'custom';
+      if (standardFields) standardFields.hidden = custom;
+      if (hint) hint.hidden = !custom;
+    };
+    radios.forEach((radio) => radio.addEventListener('change', update));
+    update();
+  });
 
   document.querySelectorAll('[data-frequency-config]').forEach((config) => {
     const form = config.closest('form');
@@ -313,6 +378,39 @@
     startInput.addEventListener('change', updatePreview);
     planningMonthInput?.addEventListener('change', updatePreview);
     updatePreview();
+  });
+
+  document.querySelectorAll('[data-frequency-rule-form]').forEach((form) => {
+    const start = form.querySelector('input[name="start_date"]');
+    const end = form.querySelector('input[name="end_date"]');
+    const mode = form.querySelector('[data-rule-frequency-mode]');
+    const value = form.querySelector('[data-rule-frequency-value]');
+    const label = form.querySelector('[data-rule-frequency-label]');
+    const suffix = form.querySelector('[data-rule-frequency-suffix]');
+    const preview = form.querySelector('[data-rule-preview]');
+    const update = () => {
+      const isDaysOff = mode?.value === 'days_off';
+      const raw = Number.parseInt(value?.value || (isDaysOff ? '0' : '1'), 10);
+      const normalized = isDaysOff ? Math.max(0, raw || 0) : Math.max(1, raw || 1);
+      if (value) {
+        value.min = isDaysOff ? '0' : '1';
+        value.value = String(normalized);
+      }
+      if (label) label.textContent = isDaysOff ? 'Quantos dias completos sem postar?' : 'Publicar a cada quantos dias?';
+      if (suffix) suffix.textContent = isDaysOff ? 'dias sem postar' : 'dias entre postagens';
+      if (!start?.value || !end?.value || !preview) return;
+      const first = parseLocalDate(start.value);
+      const last = parseLocalDate(end.value);
+      const days = Math.max(1, calendarDayDiff(first, last) + 1);
+      const step = isDaysOff ? normalized + 1 : normalized;
+      const count = Math.floor((days - 1) / Math.max(1, step)) + 1;
+      const sample = [];
+      for (let i = 0; i < Math.min(4, count); i += 1) sample.push(formatShortDate(addDays(first, i * step)));
+      preview.textContent = `${days} dias no trecho · ${count} vídeo${count === 1 ? '' : 's'} · datas: ${sample.join(', ')}${count > 4 ? '...' : ''}`;
+    };
+    [start, end, mode, value].forEach((input) => input?.addEventListener('input', update));
+    mode?.addEventListener('change', update);
+    update();
   });
 
   const titleFields = document.querySelector('[data-title-fields]');

@@ -6,11 +6,11 @@
   <meta name="theme-color" content="#0b0711">
   <title>{% block title %}DS-PLANNERX{% endblock %}</title>
   <meta name="application-name" content="DS-PLANNERX">
-  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', path='/img/dsplannerx-favicon.svg') }}?v=2.2">
-  <link rel="shortcut icon" href="{{ url_for('static', path='/img/dsplannerx-favicon.svg') }}?v=2.2">
-  <link rel="stylesheet" href="{{ url_for('static', path='/css/style.css') }}?v=2.0">
-  <script defer src="{{ url_for('static', path='/js/app.js') }}?v=2.1"></script>
-  {% if cloud_upload_enabled %}<script type="module" src="{{ url_for('static', path='/js/cloud-upload.js') }}?v=2.1"></script>{% endif %}
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', path='/img/dsplannerx-favicon.svg') }}?v=2.3">
+  <link rel="shortcut icon" href="{{ url_for('static', path='/img/dsplannerx-favicon.svg') }}?v=2.3">
+  <link rel="stylesheet" href="{{ url_for('static', path='/css/style.css') }}?v=2.3">
+  <script defer src="{{ url_for('static', path='/js/app.js') }}?v=2.3"></script>
+  {% if cloud_upload_enabled %}<script type="module" src="{{ url_for('static', path='/js/cloud-upload.js') }}?v=2.3"></script>{% endif %}
 </head>
 <body>
   <div class="app-shell">
@@ -26,6 +26,9 @@
         <button class="nav-item nav-button" type="button" data-open-modal="channelModal">
           <span class="nav-emoji">➕</span><span>Novo canal</span>
         </button>
+        <a href="{{ url_for('production_flow') }}" class="nav-item {% if active_endpoint == 'production_flow' %}active{% endif %}">
+          <span class="nav-emoji">⚙️</span><span>Fluxo de Produção</span>
+        </a>
       </nav>
       <div class="sidebar-note">
         <span class="sparkle">✦</span>
@@ -64,6 +67,19 @@
     </main>
   </div>
 
+  {% if celebration %}
+  <div class="goal-celebration open" data-goal-celebration>
+    <div class="goal-celebration-backdrop"></div>
+    <div class="goal-celebration-card">
+      <button type="button" class="goal-celebration-close" data-close-celebration>✕</button>
+      <div class="goal-trophy">{{ celebration.emoji }}</div>
+      <span>{{ celebration.title }}</span>
+      <h2>{{ celebration.message }}</h2>
+      <button type="button" class="btn btn-primary" data-close-celebration>Continuar produzindo 🚀</button>
+    </div>
+  </div>
+  {% endif %}
+
   <div class="modal" id="channelModal" aria-hidden="true">
     <div class="modal-backdrop" data-close-modal></div>
     <div class="modal-dialog large">
@@ -84,6 +100,21 @@
           <span>Meta de títulos</span>
           <input type="number" name="title_goal" min="1" value="12" required>
         </label>
+        <div class="field span-2 schedule-mode-config" data-schedule-mode-config>
+          <span>Modo de planejamento das postagens</span>
+          <div class="schedule-mode-options">
+            <label class="schedule-mode-option">
+              <input type="radio" name="schedule_mode" value="standard" checked>
+              <span><b>📆 Ritmo padrão</b><small>Use intervalo fixo, dias de pausa e um período contínuo.</small></span>
+            </label>
+            <label class="schedule-mode-option">
+              <input type="radio" name="schedule_mode" value="custom">
+              <span><b>🧩 Personalizado por mês</b><small>Crie regras diferentes para cada trecho do mês no calendário do canal.</small></span>
+            </label>
+          </div>
+        </div>
+        <div class="custom-mode-hint span-2" data-custom-mode-hint hidden>Depois de criar o canal, abra um mês no calendário e adicione quantas regras quiser. O total de vídeos e as datas serão calculados automaticamente.</div>
+
         <div class="field span-2 frequency-config" data-frequency-config>
           <span>Como calcular o ritmo de postagem?</span>
           <div class="frequency-mode-options">

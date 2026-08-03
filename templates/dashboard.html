@@ -36,7 +36,7 @@
       <div class="progress-head"><span>Progresso da meta</span><strong>{{ card.stats.completed }}/{{ card.stats.goal }}</strong></div>
       <div class="progress-track"><div class="progress-fill" style="width:{{ card.stats.progress }}%"></div></div>
       <div class="channel-meta">
-        <span>{{ '📆' if card.projection.frequency_mode == 'interval' else '⏸️' }} {{ card.projection.frequency_text_compact|capitalize }}</span>
+        <span>{{ '🧩' if card.projection.schedule_mode == 'custom' else ('📆' if card.projection.frequency_mode == 'interval' else '⏸️') }} {{ card.projection.frequency_text_compact|capitalize }}</span>
         <span>🎯 {{ card.projection.count }} vídeos em {{ card.projection.period_days }} dias</span>
         <span>{{ card.stats.remaining_titles }} títulos restantes</span>
       </div>

@@ -1,0 +1,94 @@
+{% extends 'base.html' %}
+{% block title %}DS-PLANNERX · {{ month_label }}{% endblock %}
+{% block page_title %}Planejamento de {{ month_label }}{% endblock %}
+{% block topbar_actions %}
+<a class="btn btn-ghost" href="{{ url_for('channel_detail', channel_id=channel.id) }}?year={{ year_month[:4] }}">← Voltar ao canal</a>
+{% endblock %}
+
+{% block content %}
+<section class="month-plan-hero">
+  <div>
+    <span class="eyebrow">PLANEJAMENTO PERSONALIZADO</span>
+    <h2>{{ channel.name }} · {{ month_label }}</h2>
+    <p>Combine ritmos diferentes em cada trecho do mês. As datas repetidas são removidas automaticamente.</p>
+  </div>
+  <div class="month-plan-total"><span>PREVISÃO DO MÊS</span><strong>{{ total_dates }}</strong><small>vídeos / datas calculadas</small></div>
+</section>
+
+<section class="month-plan-grid">
+  <div class="month-plan-main">
+    <section class="panel-card">
+      <div class="section-heading inline compact-heading">
+        <div><span class="eyebrow">REGRAS DE POSTAGEM</span><h2>Personalizar o ritmo</h2></div>
+      </div>
+      <form action="{{ url_for('add_schedule_rule', channel_id=channel.id, year_month=year_month) }}" method="post" class="form-grid rule-form" data-frequency-rule-form>
+        <label class="field"><span>Começa em</span><input type="date" name="start_date" min="{{ month_start }}" max="{{ month_end }}" value="{{ month_start }}" required></label>
+        <label class="field"><span>Termina em</span><input type="date" name="end_date" min="{{ month_start }}" max="{{ month_end }}" value="{{ month_end }}" required></label>
+        <label class="field"><span>Tipo de frequência</span><select name="frequency_mode" data-rule-frequency-mode><option value="interval">📆 Intervalo entre postagens</option><option value="days_off">⏸️ Dias completos sem postar</option></select></label>
+        <label class="field"><span data-rule-frequency-label>Publicar a cada quantos dias?</span><div class="input-suffix"><input type="number" name="interval_days" min="1" value="1" required data-rule-frequency-value><span data-rule-frequency-suffix>dias entre postagens</span></div></label>
+        <div class="rule-preview span-2" data-rule-preview>Exemplo: selecione as datas para visualizar a regra.</div>
+        <div class="modal-actions span-2"><button class="btn btn-primary" type="submit">＋ Adicionar regra ao mês</button></div>
+      </form>
+
+      {% if rules %}
+      <div class="rules-list">
+        {% for rule in rules %}
+        <article class="rule-card">
+          <div class="rule-number">{{ '%02d'|format(loop.index) }}</div>
+          <div><strong>{{ rule.start_date|date_br }} → {{ rule.end_date|date_br }}</strong><span>{{ 'A cada ' ~ rule.interval_days ~ ' dia(s)' if rule.frequency_mode == 'interval' else rule.interval_days ~ ' dia(s) completos sem postar' }}</span></div>
+          <form action="{{ url_for('delete_schedule_rule', rule_id=rule.id) }}" method="post" data-confirm="Remover esta regra do mês?"><button class="icon-button" type="submit">🗑️</button></form>
+        </article>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty-inline">🧩 Nenhuma regra criada. Exemplo: 03/08 a 09/08 diariamente; 10/08 a 31/08 a cada 2 dias.</div>
+      {% endif %}
+    </section>
+
+    <section class="panel-card">
+      <div class="section-heading inline compact-heading"><div><span class="eyebrow">CARDS DO MÊS</span><h2>Vídeos de {{ month_label }}</h2></div></div>
+      <form action="{{ url_for('create_video', channel_id=channel.id) }}" method="post" class="form-grid monthly-video-form">
+        <input type="hidden" name="return_to" value="{{ url_for('monthly_plan', channel_id=channel.id, year_month=year_month) }}">
+        <label class="field span-2"><span>Título do vídeo</span><input name="title" placeholder="Digite o título planejado" required></label>
+        <label class="field"><span>Data de publicação</span><input type="date" name="planned_date" min="{{ month_start }}" max="{{ month_end }}" value="{{ month_start }}" required></label>
+        <label class="field"><span>Status</span><select name="status"><option value="production">🎬 Em produção</option><option value="completed">✅ Concluído</option></select></label>
+        <label class="field span-2"><span>Observação</span><textarea name="description" rows="2" placeholder="Roteiro, capa, gancho, responsável..."></textarea></label>
+        <div class="modal-actions span-2"><button class="btn btn-secondary" type="submit">＋ Criar card neste mês</button></div>
+      </form>
+
+      {% if month_videos %}
+      <div class="month-video-list">
+        {% for video in month_videos %}
+        <a href="{{ url_for('video_detail', video_id=video.id) }}" class="month-video-row">
+          <span class="month-video-date">{{ video.planned_date[8:10] }}</span>
+          <div><strong>{{ video.title }}</strong><small>{{ video.planned_date|date_br }} · {{ 'Publicado' if video.published_at else ('Concluído' if video.status == 'completed' else 'Em produção') }}</small></div>
+          <em class="{{ 'published' if video.published_at else video.status }}">{{ '🟢' if video.published_at else ('✅' if video.status == 'completed' else '🎬') }}</em>
+        </a>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="empty-inline">🎞️ Ainda não há cards com data neste mês.</div>
+      {% endif %}
+    </section>
+  </div>
+
+  <aside class="month-plan-side">
+    <section class="side-panel schedule-panel">
+      <div class="panel-title"><span>🗓️</span><div><small>DATAS CALCULADAS</small><h3>{{ total_dates }} publicações</h3></div></div>
+      <div class="date-list month-date-list">
+        {% for item in schedule_items %}
+        <div class="date-item {{ item.state }}"><span>{{ item.date.strftime('%d') }}</span><div><strong>{{ item.date.strftime('%d/%m/%Y') }}</strong><small>{{ item.label }}</small></div>{% if item.videos %}<em>{{ item.published_count }}/{{ item.videos|length }}</em>{% endif %}</div>
+        {% else %}<div class="schedule-empty">Adicione uma regra para gerar as datas.</div>{% endfor %}
+      </div>
+    </section>
+
+    <section class="side-panel">
+      <div class="panel-title"><span>📝</span><div><small>ANOTAÇÕES DO MÊS</small><h3>Planejamento geral</h3></div></div>
+      <form action="{{ url_for('save_monthly_plan', channel_id=channel.id, year_month=year_month) }}" method="post">
+        <textarea class="month-notes" name="notes" rows="8" placeholder="Metas, temas, campanhas, operadores, observações...">{{ plan.notes if plan else '' }}</textarea>
+        <button class="btn btn-primary full" type="submit">💾 Salvar planejamento</button>
+      </form>
+    </section>
+  </aside>
+</section>
+{% endblock %}

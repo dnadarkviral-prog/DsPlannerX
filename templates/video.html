@@ -17,6 +17,9 @@
     <button class="script-ready-toggle detail-toggle {% if video.script_completed_at %}ready{% endif %}" type="button" data-script-ready data-video-id="{{ video.id }}" data-ready="{{ 'true' if video.script_completed_at else 'false' }}" title="Marcar ou desmarcar o roteiro como pronto">
       <span>{{ '✅' if video.script_completed_at else '📜' }}</span><b>{{ 'Roteiro pronto' if video.script_completed_at else 'Marcar roteiro pronto' }}</b>
     </button>
+    <button class="published-toggle detail-toggle {% if video.published_at %}published{% endif %}" type="button" data-published-toggle data-video-id="{{ video.id }}" data-published="{{ 'true' if video.published_at else 'false' }}">
+      <span>{{ '🟢' if video.published_at else '📡' }}</span><b>{{ 'Publicado' if video.published_at else 'Marcar publicado' }}</b>
+    </button>
     <div class="planned-date-box"><span>📅 Publicação planejada</span><strong>{{ video.planned_date|date_br if video.planned_date else 'Não definida' }}</strong></div>
   </div>
 </section>

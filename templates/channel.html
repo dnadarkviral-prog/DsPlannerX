@@ -39,11 +39,20 @@
 </section>
 
 <section class="stats-grid channel-stats">
-  <article class="stat-card motivation-card" aria-label="Frase motivacional do canal">
-    <div class="motivation-emoji">{{ motivation.emoji }}</div>
-    <div class="motivation-copy">
-      <span>{{ motivation.label }}</span>
-      <p>{{ motivation.text }}</p>
+  <article class="stat-card year-planner-card">
+    <div class="year-planner-head">
+      <div><span>CALENDÁRIO DE PLANEJAMENTO</span><strong>{{ calendar_year }}</strong></div>
+      <div class="year-nav">
+        <a href="{{ url_for('channel_detail', channel_id=channel.id) }}?year={{ calendar_year - 1 }}">‹</a>
+        <a href="{{ url_for('channel_detail', channel_id=channel.id) }}?year={{ calendar_year + 1 }}">›</a>
+      </div>
+    </div>
+    <div class="month-mini-grid">
+      {% for month in month_cards %}
+      <a class="month-mini-card {% if month.has_plan %}planned{% endif %} {% if month.is_current %}current{% endif %}" href="{{ url_for('monthly_plan', channel_id=channel.id, year_month=month.year_month) }}">
+        <b>{{ month.short }}</b><span>{{ month.video_count }} cards</span><small>{{ month.rule_count }} regras</small>
+      </a>
+      {% endfor %}
     </div>
   </article>
   <article class="stat-card"><div class="stat-icon orange">🎬</div><div><span>Em produção</span><strong>{{ stats.production }}</strong></div></article>
@@ -100,6 +109,9 @@
           <button class="script-ready-toggle {% if video.script_completed_at %}ready{% endif %}" type="button" data-script-ready data-video-id="{{ video.id }}" data-ready="{{ 'true' if video.script_completed_at else 'false' }}" title="Marcar ou desmarcar o roteiro como pronto">
             <span>{{ '✅' if video.script_completed_at else '📜' }}</span><b>{{ 'Roteiro pronto' if video.script_completed_at else 'Marcar roteiro' }}</b>
           </button>
+          <button class="published-toggle {% if video.published_at %}published{% endif %}" type="button" data-published-toggle data-video-id="{{ video.id }}" data-published="{{ 'true' if video.published_at else 'false' }}" title="Marcar ou desmarcar como publicado">
+            <span>{{ '🟢' if video.published_at else '📡' }}</span><b>{{ 'Publicado' if video.published_at else 'Marcar publicado' }}</b>
+          </button>
           <select class="status-select {{ video.status }}" data-status-select data-video-id="{{ video.id }}">
             <option value="production" {% if video.status == 'production' %}selected{% endif %}>🎬 Em produção</option>
             <option value="completed" {% if video.status == 'completed' %}selected{% endif %}>✅ Concluído</option>
@@ -126,7 +138,15 @@
       <div class="month-estimate"><span>{{ projection.period_label }}</span><strong>{{ projection.count }} vídeos</strong></div>
       <div class="calculation-formula">🧮 {{ projection.formula_text }} = <strong>{{ projection.count }} vídeos</strong></div>
       <div class="date-list">
-        {% for item in upcoming %}<div class="date-item {% if loop.first %}next{% endif %}"><span>{{ item.strftime('%d') }}</span><div><strong>{{ item.strftime('%d/%m/%Y') }}</strong><small>{{ 'Próxima postagem' if loop.first else 'Postagem prevista' }}</small></div></div>{% endfor %}
+        {% for item in upcoming %}
+        <div class="date-item {{ item.state }} {% if loop.first %}next{% endif %}">
+          <span>{{ item.date.strftime('%d') }}</span>
+          <div><strong>{{ item.date.strftime('%d/%m/%Y') }}</strong><small>{{ item.label }}</small></div>
+          {% if item.videos %}<em>{{ item.published_count }}/{{ item.videos|length }}</em>{% endif %}
+        </div>
+        {% else %}
+        <div class="schedule-empty">Abra um mês no calendário e crie regras personalizadas.</div>
+        {% endfor %}
       </div>
       <button class="btn btn-secondary full" type="button" data-open-modal="settingsModal">⚙️ Ajustar frequência</button>
     </section>
@@ -271,6 +291,21 @@
       <label class="field span-2"><span>Nome do canal</span><input name="name" value="{{ channel.name }}" required></label>
       <label class="field span-2"><span>Descrição</span><textarea name="description" rows="3">{{ channel.description }}</textarea></label>
       <label class="field"><span>Meta de títulos/vídeos</span><input type="number" name="title_goal" min="1" value="{{ channel.title_goal }}" required></label>
+      <div class="field span-2 schedule-mode-config" data-schedule-mode-config>
+        <span>Modo de planejamento das postagens</span>
+        <div class="schedule-mode-options">
+          <label class="schedule-mode-option">
+            <input type="radio" name="schedule_mode" value="standard" {% if channel.schedule_mode != 'custom' %}checked{% endif %}>
+            <span><b>📆 Ritmo padrão</b><small>Uma frequência fixa para todo o período.</small></span>
+          </label>
+          <label class="schedule-mode-option">
+            <input type="radio" name="schedule_mode" value="custom" {% if channel.schedule_mode == 'custom' %}checked{% endif %}>
+            <span><b>🧩 Personalizado por mês</b><small>Combine regras diferentes em cada semana ou trecho do mês.</small></span>
+          </label>
+        </div>
+      </div>
+      <div class="custom-mode-hint span-2" data-custom-mode-hint {% if channel.schedule_mode != 'custom' %}hidden{% endif %}>Use os quadradinhos JAN, FEV, MAR... no calendário acima. Cada mês abre um planejamento próprio com regras, datas calculadas e cards daquele mês.</div>
+      <div class="standard-schedule-fields span-2" data-standard-schedule-fields {% if channel.schedule_mode == 'custom' %}hidden{% endif %}>
       <div class="field span-2 frequency-config" data-frequency-config>
         <span>Como calcular o ritmo de postagem?</span>
         <div class="frequency-mode-options">
@@ -318,6 +353,7 @@
         <small class="field-help">A agenda vai até o último dia do mês escolhido.</small>
       </label>
       <div class="period-preview span-2" data-period-help></div>
+      </div>
       <label class="field file-field"><span>Trocar imagem</span><input type="file" name="image" accept="image/*"></label>
       <div class="modal-actions span-2"><button type="button" class="btn btn-ghost" data-close-modal>Cancelar</button><button type="submit" class="btn btn-primary">💾 Salvar alterações</button></div>
     </form>
