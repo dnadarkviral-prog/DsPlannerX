@@ -191,7 +191,21 @@ def asset_url(value: str | None) -> str:
     return f"/uploads/{quote(value, safe='')}"
 
 
+def download_url(value: str | None) -> str:
+    """Força o navegador a baixar o arquivo sem reinterpretar o conteúdo.
+
+    O Vercel Blob reconhece ``download=1`` e responde como anexo. Para os
+    uploads locais, a rota /uploads usa o mesmo parâmetro.
+    """
+    url = asset_url(value)
+    if not url:
+        return ""
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}download=1"
+
+
 templates.env.filters["asset_url"] = asset_url
+templates.env.filters["download_url"] = download_url
 
 
 class PostgresConnectionAdapter:
@@ -2522,14 +2536,17 @@ def delete_production_log(log_id: int):
 
 
 @app.get("/uploads/{filename:path}", name="uploaded_file")
-def uploaded_file(filename: str):
+def uploaded_file(filename: str, download: int = 0):
     if filename.startswith(("https://", "http://")):
         if not is_vercel_blob_url(filename):
             raise HTTPException(status_code=404)
-        return RedirectResponse(filename, status_code=307)
+        target = download_url(filename) if download else filename
+        return RedirectResponse(target, status_code=307)
     path = UPLOAD_DIR / filename
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404)
+    if download:
+        return FileResponse(path, filename=path.name, content_disposition_type="attachment")
     return FileResponse(path)
 
 

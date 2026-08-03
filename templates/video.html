@@ -86,14 +86,17 @@
         <button class="btn btn-primary full" type="submit">⬆️ Anexar arquivos</button>
       </form>
 
-      {% if attachments %}<div class="attachment-list">
+      {% if attachments %}<p class="attachment-download-hint">⬇️ Use o botão de download para obter o arquivo original, sem conversão de texto.</p><div class="attachment-list">
         {% for item in attachments %}
         <article class="attachment-card">
-          <a href="{{ item.stored_name|asset_url }}" target="_blank" class="attachment-main">
+          <a href="{{ item.stored_name|asset_url }}" target="_blank" rel="noopener" class="attachment-main" title="Abrir visualização do arquivo">
             <span class="attachment-icon">{{ {'video':'🎥','audio':'🎧','image':'🖼️','pdf':'📕','text':'📄'}[item.file_type] }}</span>
             <div><strong title="{{ item.original_name }}">{{ item.original_name }}</strong><small>{{ item.file_type|upper }} · {{ item.size_bytes|filesize }}</small></div>
           </a>
-          <form action="{{ url_for('delete_attachment', attachment_id=item.id) }}" method="post" data-confirm="Excluir este anexo?"><button type="submit" class="icon-button danger">✕</button></form>
+          <div class="attachment-actions">
+            <a href="{{ item.stored_name|download_url }}" download="{{ item.original_name }}" class="icon-button download" aria-label="Baixar arquivo original" title="Baixar arquivo original">⬇</a>
+            <form action="{{ url_for('delete_attachment', attachment_id=item.id) }}" method="post" data-confirm="Excluir este anexo?"><button type="submit" class="icon-button danger" aria-label="Excluir anexo" title="Excluir anexo">✕</button></form>
+          </div>
         </article>
         {% endfor %}
       </div>{% else %}<div class="mini-empty">📂 Ainda não há arquivos anexados neste card.</div>{% endif %}

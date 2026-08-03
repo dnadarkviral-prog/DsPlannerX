@@ -82,3 +82,10 @@ Esta edição usa exatamente a estrutura de banco da versão estável v2.3.1. O 
 - O formulário de novo vídeo já abre limitado ao mês selecionado e sugere a primeira data ainda sem card.
 - A página antiga `/months/AAAA-MM` permanece compatível, mas redireciona para a página principal com o mês selecionado.
 - A atualização não cria nem altera tabelas do Neon. Os bancos mensais usam posições reservadas na tabela de títulos existente, preservando o banco geral e todos os dados anteriores.
+
+## v2.5.1 — Download de anexos originais
+
+- Botão de download em cada anexo.
+- O download usa o arquivo original armazenado no Vercel Blob, sem conversão de codificação.
+- Arquivos TXT/SRT que aparecem com caracteres estranhos no navegador podem ser baixados e abertos no editor adequado.
+- A visualização e a exclusão dos anexos continuam disponíveis separadamente.
