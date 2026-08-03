@@ -70,3 +70,15 @@ Substitua os arquivos do repositório e faça o commit normalmente. Não apague 
 ## Atualização segura v2.4.2
 
 Esta edição usa exatamente a estrutura de banco da versão estável v2.3.1. O planejamento personalizado foi reorganizado no código e no layout sem adicionar, remover ou renomear colunas no Neon. Os períodos são numerados automaticamente na interface.
+
+
+## Atualização v2.5 — página mensal unificada
+
+- Clicar em um mês do calendário mantém o usuário na página principal do canal.
+- A mesma tela passa a mostrar apenas o planejamento, os cards, as datas e os indicadores do mês selecionado.
+- A meta de produção mensal usa a quantidade de datas calculadas no planejamento daquele mês.
+- Em produção, concluídos, títulos restantes e porcentagem são calculados somente com os cards daquele mês.
+- Cada mês possui um Banco de Títulos independente, inicialmente vazio, cuja quantidade acompanha as datas planejadas.
+- O formulário de novo vídeo já abre limitado ao mês selecionado e sugere a primeira data ainda sem card.
+- A página antiga `/months/AAAA-MM` permanece compatível, mas redireciona para a página principal com o mês selecionado.
+- A atualização não cria nem altera tabelas do Neon. Os bancos mensais usam posições reservadas na tabela de títulos existente, preservando o banco geral e todos os dados anteriores.

@@ -1168,29 +1168,81 @@ def achieved_kind(before: dict[str, Any], after: dict[str, Any], general_before:
     return None
 
 
-def channel_stats(db: sqlite3.Connection, channel_id: int, title_goal: int) -> dict[str, int | float]:
-    rows = db.execute(
-        "SELECT status, COUNT(*) AS total FROM videos WHERE channel_id = ? GROUP BY status",
-        (channel_id,),
+MONTH_TITLE_POSITION_BASE = 10_000_000
+MONTH_TITLE_POSITION_STEP = 1_000
+MONTH_TITLE_MAX_SLOTS = 200
+
+
+def month_title_position_base(year_month: str) -> int:
+    year, month = parse_year_month(valid_year_month(year_month))
+    return MONTH_TITLE_POSITION_BASE + (year - 2000) * 100_000 + month * MONTH_TITLE_POSITION_STEP
+
+
+def title_bank_records(db: Any, channel_id: int, year_month: str | None = None) -> list[Any]:
+    if year_month:
+        base = month_title_position_base(year_month)
+        return db.execute(
+            """SELECT position, title, status FROM channel_titles
+            WHERE channel_id = ? AND position > ? AND position <= ? ORDER BY position""",
+            (channel_id, base, base + MONTH_TITLE_MAX_SLOTS),
+        ).fetchall()
+    return db.execute(
+        """SELECT position, title, status FROM channel_titles
+        WHERE channel_id = ? AND position < ? ORDER BY position""",
+        (channel_id, MONTH_TITLE_POSITION_BASE),
     ).fetchall()
+
+
+def title_bank_slots(db: Any, channel_id: int, goal: int, year_month: str | None = None) -> list[dict[str, Any]]:
+    rows = title_bank_records(db, channel_id, year_month)
+    base = month_title_position_base(year_month) if year_month else 0
+    by_position: dict[int, dict[str, str]] = {}
+    for item in rows:
+        local_position = int(item["position"]) - base
+        if local_position < 1 or local_position > MONTH_TITLE_MAX_SLOTS:
+            continue
+        by_position[local_position] = {
+            "title": str(item["title"] or ""),
+            "status": item["status"] if item["status"] in TITLE_STATUS_LABELS else "ready",
+        }
+    highest = max(by_position, default=0)
+    slot_count = min(max(int(goal or 0), highest), MONTH_TITLE_MAX_SLOTS)
+    return [
+        {
+            "position": position,
+            "title": by_position.get(position, {}).get("title", ""),
+            "status": by_position.get(position, {}).get("status", "ready"),
+        }
+        for position in range(1, slot_count + 1)
+    ]
+
+
+def channel_stats(
+    db: Any,
+    channel_id: int,
+    title_goal: int,
+    year_month: str | None = None,
+) -> dict[str, int | float]:
+    sql = "SELECT status, COUNT(*) AS total FROM videos WHERE channel_id = ?"
+    params: list[Any] = [channel_id]
+    if year_month:
+        normalized_month = valid_year_month(year_month)
+        sql += " AND planned_date LIKE ?"
+        params.append(f"{normalized_month}-%")
+    sql += " GROUP BY status"
+    rows = db.execute(sql, params).fetchall()
     counts = {"todo": 0, "production": 0, "completed": 0}
     for row in rows:
-        counts[row["status"]] = row["total"]
+        counts[row["status"]] = int(row["total"] or 0)
     total = sum(counts.values())
-    goal = max(1, int(title_goal or 1))
-    title_row = db.execute(
-        "SELECT COUNT(*) AS total FROM channel_titles WHERE channel_id = ? AND TRIM(title) <> ''",
-        (channel_id,),
-    ).fetchone()
-    title_count = int(title_row["total"] if title_row else 0)
+    goal = max(0, int(title_goal or 0)) if year_month else max(1, int(title_goal or 1))
+    title_count = sum(1 for row in title_bank_records(db, channel_id, year_month) if str(row["title"] or "").strip())
 
-    # Indicadores independentes:
-    # - Títulos restantes acompanha somente a produção concluída.
-    # - Banco de títulos acompanha somente os campos preenchidos no banco.
     remaining_titles = max(goal - counts["completed"], 0)
     bank_remaining_titles = max(goal - title_count, 0)
-    progress = min(counts["completed"] / goal * 100, 100)
-    title_progress = min(title_count / goal * 100, 100)
+    denominator = max(goal, 1)
+    progress = min(counts["completed"] / denominator * 100, 100) if goal else 0
+    title_progress = min(title_count / denominator * 100, 100) if goal else 0
     return {
         **counts,
         "total": total,
@@ -1202,6 +1254,44 @@ def channel_stats(db: sqlite3.Connection, channel_id: int, title_goal: int) -> d
         "title_progress": round(title_progress, 1),
     }
 
+
+def custom_month_projection(db: Any, channel_id: int, year_month: str) -> dict[str, Any]:
+    normalized_month = valid_year_month(year_month)
+    year, month = parse_year_month(normalized_month)
+    month_start = date(year, month, 1)
+    month_end = date(year, month, calendar.monthrange(year, month)[1])
+    dates = custom_schedule_dates(db, channel_id, normalized_month)
+    rules = db.execute(
+        "SELECT * FROM schedule_rules WHERE channel_id = ? AND year_month = ? ORDER BY start_date, id",
+        (channel_id, normalized_month),
+    ).fetchall()
+    if dates:
+        period_start, period_end = dates[0], dates[-1]
+        period_days = (period_end - period_start).days + 1
+        period_label = f"{period_start.strftime('%d/%m/%Y')} até {period_end.strftime('%d/%m/%Y')}"
+    else:
+        period_start, period_end = month_start, month_end
+        period_days = (month_end - month_start).days + 1
+        period_label = f"{month_start.strftime('%d/%m/%Y')} até {month_end.strftime('%d/%m/%Y')}"
+    return {
+        "count": len(dates),
+        "dates": dates,
+        "period_start": period_start,
+        "period_end": period_end,
+        "period_days": period_days,
+        "planning_month": normalized_month,
+        "planning_month_text": f"{MONTH_NAMES_PT[month]} de {year}",
+        "period_summary": f"planejamento de {MONTH_NAMES_PT[month]}",
+        "period_label": period_label,
+        "formula_text": f"União de {len(rules)} período(s), sem repetir datas ({len(dates)} datas)",
+        "frequency_mode": "custom",
+        "frequency_value": 0,
+        "step_days": 0,
+        "frequency_text": "personalizado por mês",
+        "frequency_text_compact": "ritmo personalizado",
+        "schedule_mode": "custom",
+        "rules": rules,
+    }
 
 
 def daily_goal_stats(db: Any, channel: Any, target_date: date | None = None) -> dict[str, int | float | str]:
@@ -1408,7 +1498,7 @@ def health():
         "ok": not CONFIG_ERRORS,
         "database": "postgres" if USE_POSTGRES else "sqlite",
         "storage": "vercel-blob" if BLOB_ENABLED else "local",
-        "version": "2.4.3-safe-channel-fix",
+        "version": "2.5-unified-month-workspace",
     }
 
 
@@ -1525,62 +1615,20 @@ def create_channel(
 
 
 @app.get("/channels/{channel_id}", response_class=HTMLResponse, name="channel_detail")
-def channel_detail(request: Request, channel_id: int, status: str = "all", q: str = "", year: int | None = None, open_settings: int = 0, plan_month: str = ""):
+def channel_detail(
+    request: Request,
+    channel_id: int,
+    status: str = "all",
+    q: str = "",
+    year: int | None = None,
+    month: str = "",
+    open_settings: int = 0,
+    plan_month: str = "",
+):
     search = q.strip()
     with closing(get_db()) as db:
         channel = get_channel_or_404(db, channel_id)
-        sql = "SELECT * FROM videos WHERE channel_id = ?"
-        params: list[Any] = [channel_id]
-        if status in STATUS_LABELS:
-            sql += " AND status = ?"
-            params.append(status)
-        if search:
-            sql += " AND (title LIKE ? OR description LIKE ?)"
-            like = f"%{search}%"
-            params.extend([like, like])
-        sql += " ORDER BY CASE status WHEN 'production' THEN 1 ELSE 2 END, planned_date IS NULL, planned_date, updated_at DESC"
-        videos = db.execute(sql, params).fetchall()
-        stats = channel_stats(db, channel_id, channel["title_goal"])
-        saved_titles = db.execute(
-            "SELECT position, title, status FROM channel_titles WHERE channel_id = ? ORDER BY position",
-            (channel_id,),
-        ).fetchall()
-        titles_by_position = {
-            int(item["position"]): {
-                "title": item["title"],
-                "status": item["status"] if item["status"] in TITLE_STATUS_LABELS else "ready",
-            }
-            for item in saved_titles
-        }
-        highest_position = max(titles_by_position, default=0)
-        title_slot_count = max(int(channel["title_goal"]), highest_position)
-        title_slots = [
-            {
-                "position": position,
-                "title": titles_by_position.get(position, {}).get("title", ""),
-                "status": titles_by_position.get(position, {}).get("status", "ready"),
-            }
-            for position in range(1, title_slot_count + 1)
-        ]
-        daily_stats = daily_goal_stats(db, channel)
-        projection = channel_projection(db, channel)
-        upcoming = schedule_date_items(db, channel_id, projection["dates"])
-        calendar_year = min(max(int(year or today_local().year), 2020), 2100)
-
-        # O calendário personalizado é um recurso complementar. Se uma base
-        # antiga tiver algum dado mensal inesperado, o canal principal continua
-        # abrindo normalmente em vez de retornar Internal Server Error.
-        month_cards: list[dict[str, Any]] = []
         custom_plans: list[dict[str, Any]] = []
-        try:
-            month_cards = month_calendar(db, channel_id, calendar_year)
-        except Exception as exc:
-            db.rollback()
-            print(
-                f"[DS-PLANNERX] Falha ao carregar calendário do canal {channel_id}: "
-                f"{type(exc).__name__}: {exc}",
-                flush=True,
-            )
         try:
             custom_plans = custom_plans_payload(db, channel_id)
         except Exception as exc:
@@ -1590,6 +1638,86 @@ def channel_detail(request: Request, channel_id: int, status: str = "all", q: st
                 f"{type(exc).__name__}: {exc}",
                 flush=True,
             )
+
+        available_months = [str(item["year_month"]) for item in custom_plans]
+        requested_month = valid_year_month(month) if month else ""
+        if requested_month not in available_months:
+            requested_month = ""
+        current_month = today_local().strftime("%Y-%m")
+        if not requested_month and available_months:
+            if current_month in available_months:
+                requested_month = current_month
+            else:
+                future = [item for item in available_months if item >= current_month]
+                requested_month = min(future) if future else max(available_months)
+        selected_month = requested_month
+
+        selected_plan = None
+        selected_rules: list[Any] = []
+        if selected_month:
+            selected_plan = db.execute(
+                "SELECT * FROM monthly_plans WHERE channel_id = ? AND year_month = ?",
+                (channel_id, selected_month),
+            ).fetchone()
+            projection = custom_month_projection(db, channel_id, selected_month)
+            selected_rules = list(projection.get("rules") or [])
+            goal = int(projection["count"])
+        else:
+            projection = channel_projection(db, channel)
+            goal = int(channel["title_goal"] or 1)
+
+        sql = "SELECT * FROM videos WHERE channel_id = ?"
+        params: list[Any] = [channel_id]
+        if selected_month:
+            sql += " AND planned_date LIKE ?"
+            params.append(f"{selected_month}-%")
+        if status in STATUS_LABELS:
+            sql += " AND status = ?"
+            params.append(status)
+        if search:
+            sql += " AND (title LIKE ? OR description LIKE ?)"
+            like = f"%{search}%"
+            params.extend([like, like])
+        sql += " ORDER BY CASE status WHEN 'production' THEN 1 ELSE 2 END, planned_date IS NULL, planned_date, updated_at DESC"
+        videos = db.execute(sql, params).fetchall()
+
+        stats = channel_stats(db, channel_id, goal, selected_month or None)
+        title_slots = title_bank_slots(db, channel_id, stats["goal"], selected_month or None)
+        daily_stats = daily_goal_stats(db, channel)
+        upcoming = schedule_date_items(db, channel_id, projection["dates"])
+
+        if selected_month:
+            selected_year, selected_month_number = parse_year_month(selected_month)
+            selected_month_label = f"{MONTH_NAMES_PT[selected_month_number]} de {selected_year}"
+            month_start = date(selected_year, selected_month_number, 1)
+            month_end = date(selected_year, selected_month_number, calendar.monthrange(selected_year, selected_month_number)[1])
+            used_dates = {
+                str(item["planned_date"])
+                for item in db.execute(
+                    "SELECT planned_date FROM videos WHERE channel_id = ? AND planned_date LIKE ? AND planned_date IS NOT NULL",
+                    (channel_id, f"{selected_month}-%"),
+                ).fetchall()
+            }
+            default_date = next((item for item in projection["dates"] if item.isoformat() not in used_dates), None)
+            default_video_date = (default_date or (projection["dates"][0] if projection["dates"] else month_start)).isoformat()
+        else:
+            selected_month_label = "Geral"
+            month_start = parse_iso_date(channel["start_date"])
+            month_end = projection["period_end"]
+            default_video_date = projection["dates"][0].isoformat() if projection["dates"] else month_start.isoformat()
+
+        calendar_year = min(max(int(year or (selected_month[:4] if selected_month else today_local().year)), 2020), 2100)
+        month_cards: list[dict[str, Any]] = []
+        try:
+            month_cards = month_calendar(db, channel_id, calendar_year)
+        except Exception as exc:
+            db.rollback()
+            print(
+                f"[DS-PLANNERX] Falha ao carregar calendário do canal {channel_id}: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+
     context = template_context(
         request,
         channel=channel,
@@ -1604,6 +1732,13 @@ def channel_detail(request: Request, channel_id: int, status: str = "all", q: st
         custom_plans=custom_plans,
         custom_plans_json=json.dumps(custom_plans, ensure_ascii=False),
         selected_plan_month=valid_year_month(plan_month, today_local()) if plan_month else "",
+        selected_month=selected_month,
+        selected_month_label=selected_month_label,
+        selected_plan=selected_plan,
+        selected_rules=selected_rules,
+        month_start=month_start.isoformat(),
+        month_end=month_end.isoformat(),
+        default_video_date=default_video_date,
         open_settings=bool(open_settings),
         projection=projection,
         status_filter=status,
@@ -1615,6 +1750,7 @@ def channel_detail(request: Request, channel_id: int, status: str = "all", q: st
 @app.post("/channels/{channel_id}/daily-goals", name="save_daily_goals")
 def save_daily_goals(
     channel_id: int, daily_script_goal: int = Form(1), daily_video_goal: int = Form(1),
+    return_to: str = Form(""),
 ):
     script_goal = min(max(int(daily_script_goal or 1), 1), 999)
     video_goal = min(max(int(daily_video_goal or 1), 1), 999)
@@ -1625,8 +1761,9 @@ def save_daily_goals(
             (script_goal, video_goal, now_iso(), channel_id),
         )
         db.commit()
+    destination = return_to if return_to.startswith(f"/channels/{channel_id}") else f"/channels/{channel_id}"
     return redirect_to(
-        f"/channels/{channel_id}",
+        destination,
         f"Metas diárias atualizadas: {script_goal} roteiro(s) e {video_goal} vídeo(s) por dia.",
     )
 
@@ -1640,6 +1777,7 @@ def edit_channel(
     calculation_days: str = Form(""), image: UploadFile | None = File(None),
     image_cloud_url: str = Form(""), image_cloud_name: str = Form(""),
     image_cloud_mime: str = Form(""), image_cloud_size: str = Form(""),
+    return_to: str = Form(""),
 ):
     old_image_to_remove = None
     with closing(get_db()) as db:
@@ -1689,50 +1827,63 @@ def edit_channel(
         db.commit()
     if old_image_to_remove and old_image_to_remove != image_path:
         remove_upload(old_image_to_remove)
-    return redirect_to(f"/channels/{channel_id}", "Configurações do canal atualizadas.")
+    destination = return_to if return_to.startswith(f"/channels/{channel_id}") else f"/channels/{channel_id}"
+    return redirect_to(destination, "Configurações do canal atualizadas.")
 
 
 @app.post("/channels/{channel_id}/titles", name="save_channel_titles")
 async def save_channel_titles(request: Request, channel_id: int):
     form = await request.form()
-    raw_titles = form.getlist("titles")[:200]
-    raw_statuses = form.getlist("title_statuses")[:200]
+    raw_titles = form.getlist("titles")[:MONTH_TITLE_MAX_SLOTS]
+    raw_statuses = form.getlist("title_statuses")[:MONTH_TITLE_MAX_SLOTS]
     titles = [str(value).strip()[:500] for value in raw_titles]
     statuses = [
         str(value) if str(value) in TITLE_STATUS_LABELS else "ready"
         for value in raw_statuses
     ]
+    raw_month = str(form.get("year_month") or "").strip()
+    selected_month = valid_year_month(raw_month) if raw_month else ""
     timestamp = now_iso()
     with closing(get_db()) as db:
         channel = get_channel_or_404(db, channel_id)
-        minimum_slots = max(1, int(channel["title_goal"] or 1))
+        if selected_month:
+            minimum_slots = len(custom_schedule_dates(db, channel_id, selected_month))
+            position_base = month_title_position_base(selected_month)
+        else:
+            minimum_slots = max(1, int(channel["title_goal"] or 1))
+            position_base = 0
+        minimum_slots = min(max(0, minimum_slots), MONTH_TITLE_MAX_SLOTS)
         if len(titles) < minimum_slots:
             titles.extend([""] * (minimum_slots - len(titles)))
         if len(statuses) < len(titles):
             statuses.extend(["ready"] * (len(titles) - len(statuses)))
-        for position, title in enumerate(titles, start=1):
-            title_status = statuses[position - 1] if position - 1 < len(statuses) else "ready"
+        for local_position, title in enumerate(titles, start=1):
+            stored_position = position_base + local_position
+            title_status = statuses[local_position - 1] if local_position - 1 < len(statuses) else "ready"
             if title:
                 db.execute(
                     """INSERT INTO channel_titles (channel_id, position, title, status, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(channel_id, position) DO UPDATE SET
                     title = excluded.title, status = excluded.status, updated_at = excluded.updated_at""",
-                    (channel_id, position, title, title_status, timestamp, timestamp),
+                    (channel_id, stored_position, title, title_status, timestamp, timestamp),
                 )
             else:
                 db.execute(
                     "DELETE FROM channel_titles WHERE channel_id = ? AND position = ?",
-                    (channel_id, position),
+                    (channel_id, stored_position),
                 )
         db.execute("UPDATE channels SET updated_at = ? WHERE id = ?", (timestamp, channel_id))
         db.commit()
-        saved_count = db.execute(
-            "SELECT COUNT(*) AS total FROM channel_titles WHERE channel_id = ? AND TRIM(title) <> ''",
-            (channel_id,),
-        ).fetchone()["total"]
+        saved_count = sum(
+            1 for item in title_bank_records(db, channel_id, selected_month or None)
+            if str(item["title"] or "").strip()
+        )
+    destination = f"/channels/{channel_id}"
+    if selected_month:
+        destination += f"?month={selected_month}&year={selected_month[:4]}"
     return redirect_to(
-        f"/channels/{channel_id}",
+        destination,
         f"Banco de títulos salvo: {saved_count} título{'s' if saved_count != 1 else ''} preenchido{'s' if saved_count != 1 else ''}.",
     )
 
@@ -1897,7 +2048,12 @@ async def api_video_status(request: Request, video_id: int):
         video = get_video_or_404(db, video_id)
         channel = get_channel_or_404(db, video["channel_id"])
         before_daily = daily_goal_stats(db, channel)
-        before_stats = channel_stats(db, video["channel_id"], channel["title_goal"])
+        video_month = str(video["planned_date"] or "")[:7] if video["planned_date"] else ""
+        month_goal = len(custom_schedule_dates(db, video["channel_id"], video_month)) if video_month else 0
+        scoped_month = video_month if month_goal else None
+        before_stats = channel_stats(
+            db, video["channel_id"], month_goal if scoped_month else channel["title_goal"], scoped_month,
+        )
         timestamp = now_iso()
         completed_at = video["completed_at"]
         if status == "completed" and video["status"] != "completed":
@@ -1911,7 +2067,9 @@ async def api_video_status(request: Request, video_id: int):
         db.execute("UPDATE channels SET updated_at = ? WHERE id = ?", (timestamp, video["channel_id"]))
         db.commit()
         after_daily = daily_goal_stats(db, channel)
-        stats = channel_stats(db, video["channel_id"], channel["title_goal"])
+        stats = channel_stats(
+            db, video["channel_id"], month_goal if scoped_month else channel["title_goal"], scoped_month,
+        )
         celebrate_kind = achieved_kind(
             before_daily, after_daily,
             bool(before_stats["completed"] >= before_stats["goal"]),
@@ -2163,7 +2321,7 @@ async def save_custom_month_plan(request: Request, channel_id: int):
         db.commit()
         calculated = len(custom_schedule_dates(db, channel_id, normalized_month))
     return redirect_to(
-        f"/channels/{channel_id}/months/{normalized_month}",
+        f"/channels/{channel_id}?month={normalized_month}&year={year}",
         f"Planejamento de {MONTH_NAMES_PT[month]} salvo com {calculated} data(s) de postagem.",
     )
 
@@ -2185,54 +2343,12 @@ def monthly_plan(
     request: Request, channel_id: int, year_month: str, status: str = "all", q: str = "",
 ):
     normalized_month = valid_year_month(year_month)
-    search = q.strip()
-    with closing(get_db()) as db:
-        channel = get_channel_or_404(db, channel_id)
-        plan = db.execute(
-            "SELECT * FROM monthly_plans WHERE channel_id = ? AND year_month = ?",
-            (channel_id, normalized_month),
-        ).fetchone()
-        rules = db.execute(
-            "SELECT * FROM schedule_rules WHERE channel_id = ? AND year_month = ? ORDER BY start_date, id",
-            (channel_id, normalized_month),
-        ).fetchall()
-        dates = custom_schedule_dates(db, channel_id, normalized_month)
-        schedule_items = schedule_date_items(db, channel_id, dates)
-        sql = "SELECT * FROM videos WHERE channel_id = ? AND planned_date LIKE ?"
-        params: list[Any] = [channel_id, f"{normalized_month}-%"]
-        if status in STATUS_LABELS:
-            sql += " AND status = ?"
-            params.append(status)
-        if search:
-            sql += " AND (title LIKE ? OR description LIKE ?)"
-            like = f"%{search}%"
-            params.extend([like, like])
-        sql += " ORDER BY planned_date, CASE status WHEN 'production' THEN 1 ELSE 2 END, updated_at DESC"
-        month_videos = db.execute(sql, params).fetchall()
-    year, month = parse_year_month(normalized_month)
-    month_start = date(year, month, 1)
-    month_end = date(year, month, calendar.monthrange(year, month)[1])
-    default_video_date = dates[0].isoformat() if dates else month_start.isoformat()
-    return templates.TemplateResponse(
-        request,
-        "monthly_plan.html",
-        template_context(
-            request,
-            channel=channel,
-            plan=plan,
-            rules=rules,
-            schedule_items=schedule_items,
-            month_videos=month_videos,
-            year_month=normalized_month,
-            month_label=f"{MONTH_NAMES_PT[month]} de {year}",
-            month_start=month_start.isoformat(),
-            month_end=month_end.isoformat(),
-            default_video_date=default_video_date,
-            total_dates=len(dates),
-            status_filter=status,
-            search=search,
-        ),
-    )
+    query = f"month={normalized_month}&year={normalized_month[:4]}"
+    if status in STATUS_LABELS:
+        query += f"&status={quote(status)}"
+    if q.strip():
+        query += f"&q={quote(q.strip())}"
+    return RedirectResponse(f"/channels/{channel_id}?{query}", status_code=303)
 
 
 @app.post("/channels/{channel_id}/months/{year_month}/plan", name="save_monthly_plan")

@@ -14,7 +14,11 @@
       {% if channel.image_path %}style="background-image:url('{{ channel.image_path|asset_url }}')"{% endif %}>
       {% if not channel.image_path %}{{ channel.name[0]|upper }}{% endif %}
     </div>
-    <div><span class="eyebrow">PLANEJAMENTO DO CANAL</span><h2>{{ channel.name }}</h2><p>{{ channel.description or 'Adicione uma descrição nas configurações do canal.' }}</p></div>
+    <div>
+      <span class="eyebrow">{{ channel.name|upper }}</span>
+      <h2>{% if selected_month %}Planejamento de {{ selected_month_label }}{% else %}Planejamento geral do canal{% endif %}</h2>
+      <p>{% if selected_plan and selected_plan.notes %}{{ selected_plan.notes }}{% else %}{{ channel.description or 'Configure um mês para organizar metas, títulos e cards separadamente.' }}{% endif %}</p>
+    </div>
   </div>
   <div class="hero-metrics">
     <section class="daily-goals-card" aria-label="Metas diárias de produção">
@@ -33,7 +37,7 @@
     </section>
     <div class="hero-progress">
       <div class="progress-circle" style="--progress:{{ stats.progress }}"><div><strong>{{ stats.progress|int }}%</strong><span>concluído</span></div></div>
-      <div><span>Meta de produção</span><strong>{{ stats.completed }} de {{ stats.goal }} vídeos</strong><small>{{ stats.remaining_titles }} vídeos ainda precisam ser concluídos</small></div>
+      <div><span>{% if selected_month %}Meta de produção · {{ selected_month_label }}{% else %}Meta de produção{% endif %}</span><strong>{{ stats.completed }} de {{ stats.goal }} vídeos</strong><small>{{ stats.remaining_titles }} vídeos ainda precisam ser concluídos</small></div>
     </div>
   </div>
 </section>
@@ -45,15 +49,15 @@
       <div class="year-planner-actions">
         <button type="button" class="year-add-plan" data-open-modal="settingsModal" data-new-custom-plan>＋ Novo mês</button>
         <div class="year-nav">
-          <a href="{{ url_for('channel_detail', channel_id=channel.id) }}?year={{ calendar_year - 1 }}">‹</a>
-          <a href="{{ url_for('channel_detail', channel_id=channel.id) }}?year={{ calendar_year + 1 }}">›</a>
+          <a href="{{ url_for('channel_detail', channel_id=channel.id) }}?year={{ calendar_year - 1 }}{% if selected_month %}&month={{ selected_month }}{% endif %}">‹</a>
+          <a href="{{ url_for('channel_detail', channel_id=channel.id) }}?year={{ calendar_year + 1 }}{% if selected_month %}&month={{ selected_month }}{% endif %}">›</a>
         </div>
       </div>
     </div>
     {% if month_cards %}
     <div class="month-mini-grid configured-months">
       {% for month in month_cards %}
-      <a class="month-mini-card planned {% if month.is_current %}current{% endif %}" href="{{ url_for('monthly_plan', channel_id=channel.id, year_month=month.year_month) }}">
+      <a class="month-mini-card planned {% if month.year_month == selected_month %}selected{% elif month.is_current %}current{% endif %}" href="{{ url_for('channel_detail', channel_id=channel.id) }}?month={{ month.year_month }}&year={{ month.year_month[:4] }}">
         <b>{{ month.short }}</b><span>{{ month.date_count }} postagens</span><small>{{ month.video_count }} cards · {{ month.rule_count }} períodos</small>
       </a>
       {% endfor %}
@@ -64,8 +68,8 @@
     </button>
     {% endif %}
   </article>
-  <article class="stat-card"><div class="stat-icon orange">🎬</div><div><span>Em produção</span><strong>{{ stats.production }}</strong></div></article>
-  <article class="stat-card"><div class="stat-icon green">✅</div><div><span>Concluídos</span><strong>{{ stats.completed }}</strong></div></article>
+  <article class="stat-card"><div class="stat-icon orange">🎬</div><div><span>Em produção{% if selected_month %} no mês{% endif %}</span><strong>{{ stats.production }}</strong></div></article>
+  <article class="stat-card"><div class="stat-icon green">✅</div><div><span>Concluídos{% if selected_month %} no mês{% endif %}</span><strong>{{ stats.completed }}</strong></div></article>
   <article class="stat-card titles-remaining-card">
     <div class="titles-remaining-content">
       <span>Títulos restantes</span>
@@ -78,12 +82,13 @@
 <section class="planner-layout">
   <div class="planner-main">
     <div class="section-heading inline">
-      <div><span class="eyebrow">CARDS DE PRODUÇÃO</span><h2>Vídeos planejados</h2></div>
+      <div><span class="eyebrow">CARDS DE PRODUÇÃO</span><h2>{% if selected_month %}Vídeos planejados para {{ selected_month_label }}{% else %}Vídeos planejados{% endif %}</h2></div>
       <button class="btn btn-primary" type="button" data-open-modal="videoModal">＋ Adicionar vídeo</button>
     </div>
 
     <form class="filter-bar" method="get">
-      <div class="search-box">⌕ <input name="q" value="{{ search }}" placeholder="Buscar título ou anotação"></div>
+      {% if selected_month %}<input type="hidden" name="month" value="{{ selected_month }}"><input type="hidden" name="year" value="{{ calendar_year }}">{% endif %}
+      <div class="search-box">⌕ <input name="q" value="{{ search }}" placeholder="Buscar título ou anotação{% if selected_month %} em {{ selected_month_label }}{% endif %}"></div>
       <select name="status" onchange="this.form.submit()">
         <option value="all" {% if status_filter == 'all' %}selected{% endif %}>Todos os status</option>
         <option value="production" {% if status_filter == 'production' %}selected{% endif %}>Em produção</option>
@@ -131,7 +136,7 @@
       {% endfor %}
     </div>
     {% else %}
-    <div class="empty-card-list"><div>🎞️</div><h3>Nenhum card encontrado</h3><p>Crie um vídeo ou altere os filtros da busca.</p><button class="btn btn-primary" type="button" data-open-modal="videoModal">＋ Criar card</button></div>
+    <div class="empty-card-list month-empty-cards"><div>🎞️</div><h3>{% if selected_month %}{{ selected_month_label }} está pronto para receber os cards{% else %}Nenhum card encontrado{% endif %}</h3><p>{% if selected_month %}Este planejamento começa vazio. Crie somente os vídeos deste mês, sem misturar com os demais.{% else %}Crie um vídeo ou configure um planejamento mensal.{% endif %}</p><button class="btn btn-primary" type="button" data-open-modal="videoModal">＋ Criar card</button></div>
     {% endif %}
   </div>
 
@@ -139,8 +144,8 @@
     <section class="side-panel schedule-panel">
       <div class="panel-title"><span>🗓️</span><div><small>RITMO DE POSTAGEM</small><h3>Próximas publicações</h3></div></div>
       {% if projection.schedule_mode == 'custom' %}
-      <div class="frequency-highlight"><strong>{{ projection.count }} vídeos</strong><span>em planejamentos mensais</span></div>
-      <div class="frequency-rule-badge custom">🧩 Planejamento personalizado</div>
+      <div class="frequency-highlight"><strong>{{ projection.count }} vídeos</strong><span>{% if selected_month %}planejados para {{ selected_month_label }}{% else %}em planejamentos mensais{% endif %}</span></div>
+      <div class="frequency-rule-badge custom">🧩 {% if selected_month %}{{ selected_rules|length }} período(s) deste mês{% else %}Planejamento personalizado{% endif %}</div>
       {% else %}
       <div class="frequency-highlight"><strong>1 vídeo</strong><span>{{ projection.frequency_text }}</span></div>
       <div class="frequency-rule-badge {{ projection.frequency_mode }}">{{ '📆 Intervalo entre datas' if projection.frequency_mode == 'interval' else '⏸️ Dias completos de pausa' }}</div>
@@ -166,12 +171,12 @@
     </section>
 
     <section class="side-panel title-panel">
-      <div class="panel-title"><span>💡</span><div><small>CONTROLE DE TÍTULOS</small><h3>Meta do canal</h3></div></div>
+      <div class="panel-title"><span>💡</span><div><small>CONTROLE DE TÍTULOS</small><h3>{% if selected_month %}Banco de {{ selected_month_label }}{% else %}Meta do canal{% endif %}</h3></div></div>
       <div class="title-number"><strong>{{ stats.title_count }}</strong><span>títulos adicionados</span></div>
       <div class="progress-head"><span>Banco preenchido</span><strong>{{ stats.title_count }}/{{ stats.goal }}</strong></div>
       <div class="progress-track"><div class="progress-fill" style="width:{{ stats.title_progress }}%"></div></div>
       <div class="remaining-box"><span>Ainda faltam no banco</span><strong>{{ stats.bank_remaining_titles }} títulos</strong></div>
-      <button class="btn btn-secondary full title-bank-button" type="button" data-open-modal="titlesModal">✍️ Abrir banco de títulos</button>
+      <button class="btn btn-secondary full title-bank-button" type="button" data-open-modal="titlesModal">✍️ Abrir banco de títulos{% if selected_month %} do mês{% endif %}</button>
     </section>
   </aside>
 </section>
@@ -189,6 +194,7 @@
       <div><strong>Defina seu ritmo de produção</strong><p>As barras começam em zero a cada novo dia. Elas são independentes da meta mensal, do calendário e do Banco de Títulos.</p></div>
     </div>
     <form action="{{ url_for('save_daily_goals', channel_id=channel.id) }}" method="post" class="form-grid daily-goals-form">
+      <input type="hidden" name="return_to" value="{{ url_for('channel_detail', channel_id=channel.id) }}{% if selected_month %}?month={{ selected_month }}&year={{ calendar_year }}{% endif %}">
       <label class="field">
         <span>Meta de roteiros diários</span>
         <div class="input-suffix"><input type="number" name="daily_script_goal" min="1" max="999" value="{{ daily_stats.script_goal }}" required><span>roteiros/dia</span></div>
@@ -215,7 +221,7 @@
   <div class="modal-backdrop" data-close-modal></div>
   <div class="modal-dialog titles-dialog">
     <div class="modal-head">
-      <div><span class="eyebrow">BANCO DE TÍTULOS</span><h2>Adicionar títulos do canal</h2></div>
+      <div><span class="eyebrow">BANCO DE TÍTULOS</span><h2>{% if selected_month %}Títulos de {{ selected_month_label }}{% else %}Adicionar títulos do canal{% endif %}</h2></div>
       <button class="icon-button" type="button" data-close-modal>✕</button>
     </div>
     <div class="title-manager-summary">
@@ -234,7 +240,7 @@
     </div>
     <div class="title-manager-progress">
       <div class="progress-track"><div class="progress-fill" data-title-progress style="width:{{ stats.title_progress }}%"></div></div>
-      <small>Preencha os campos abaixo. A quantidade acompanha a meta definida nas configurações do canal.</small>
+      <small>{% if selected_month %}Este banco é exclusivo de {{ selected_month_label }} e acompanha as {{ stats.goal }} datas calculadas para o mês.{% else %}Preencha os campos abaixo. A quantidade acompanha a meta geral do canal.{% endif %}</small>
     </div>
     <div class="title-status-legend" aria-label="Legenda das cores dos títulos">
       <span><i class="ready"></i> Roxo · Permitido para uso</span>
@@ -243,6 +249,7 @@
       <small>As cores são etiquetas de consulta e não alteram metas, barras, vídeos ou qualquer outro campo.</small>
     </div>
     <form action="{{ url_for('save_channel_titles', channel_id=channel.id) }}" method="post" class="title-manager-form">
+      {% if selected_month %}<input type="hidden" name="year_month" value="{{ selected_month }}">{% endif %}
       <div class="title-fields-list" data-title-fields data-title-goal="{{ stats.goal }}">
         {% for slot in title_slots %}
         <div class="title-field-row title-status-{{ slot.status }}" data-title-row data-title-status="{{ slot.status }}">
@@ -275,11 +282,12 @@
 <div class="modal" id="videoModal" aria-hidden="true">
   <div class="modal-backdrop" data-close-modal></div>
   <div class="modal-dialog large">
-    <div class="modal-head"><div><span class="eyebrow">NOVO CARD</span><h2>Adicionar vídeo</h2></div><button class="icon-button" type="button" data-close-modal>✕</button></div>
+    <div class="modal-head"><div><span class="eyebrow">NOVO CARD{% if selected_month %} · {{ selected_month_label|upper }}{% endif %}</span><h2>Adicionar vídeo{% if selected_month %} ao mês{% endif %}</h2></div><button class="icon-button" type="button" data-close-modal>✕</button></div>
     <form action="{{ url_for('create_video', channel_id=channel.id) }}" method="post" enctype="multipart/form-data" class="form-grid" data-cloud-upload-form>
+      <input type="hidden" name="return_to" value="{{ url_for('channel_detail', channel_id=channel.id) }}{% if selected_month %}?month={{ selected_month }}&year={{ calendar_year }}{% endif %}">
       <label class="field span-2"><span>Título do vídeo</span><input name="title" required placeholder="Digite o título planejado"></label>
       <label class="field"><span>Status inicial</span><select name="status"><option value="production">🎬 Em produção</option><option value="completed">✅ Concluído</option></select></label>
-      <label class="field"><span>Data de publicação</span><input type="date" name="planned_date"></label>
+      <label class="field"><span>Data de publicação</span><input type="date" name="planned_date" value="{{ default_video_date }}" {% if selected_month %}min="{{ month_start }}" max="{{ month_end }}" required{% endif %}></label>
       <label class="field span-2"><span>Descrição ou observação</span><textarea name="description" rows="4" placeholder="Ideia, gancho, tema, observações..."></textarea></label>
       <div class="field span-2">
         <span>Foto de capa do card <small class="field-hint">opcional · recomendação 16:9</small></span>
@@ -303,6 +311,7 @@
     <div class="modal-head"><div><span class="eyebrow">CONFIGURAÇÕES</span><h2>Canal e planejamento de postagens</h2></div><button class="icon-button" type="button" data-close-modal>✕</button></div>
 
     <form action="{{ url_for('edit_channel', channel_id=channel.id) }}" method="post" enctype="multipart/form-data" class="form-grid settings-main-form" data-cloud-upload-form>
+      <input type="hidden" name="return_to" value="{{ url_for('channel_detail', channel_id=channel.id) }}{% if selected_month %}?month={{ selected_month }}&year={{ calendar_year }}{% endif %}">
       <label class="field span-2"><span>Nome do canal</span><input name="name" value="{{ channel.name }}" required></label>
       <label class="field span-2"><span>Descrição</span><textarea name="description" rows="3">{{ channel.description }}</textarea></label>
       <label class="field"><span>Meta de títulos/vídeos</span><input type="number" name="title_goal" min="1" value="{{ channel.title_goal }}" required></label>
@@ -369,7 +378,7 @@
       {% if custom_plans %}
       <div class="saved-plan-chips" aria-label="Planejamentos já criados">
         {% for item in custom_plans %}
-        <a href="{{ url_for('channel_detail', channel_id=channel.id) }}?year={{ item.year_month[:4] }}&open_settings=1&plan_month={{ item.year_month }}" class="saved-plan-chip {% if selected_plan_month == item.year_month %}active{% endif %}">
+        <a href="{{ url_for('channel_detail', channel_id=channel.id) }}?month={{ item.year_month }}&year={{ item.year_month[:4] }}&open_settings=1&plan_month={{ item.year_month }}" class="saved-plan-chip {% if selected_plan_month == item.year_month %}active{% endif %}">
           <b>{{ item.month_label }}</b><span>{{ item.date_count }} postagens</span>
         </a>
         {% endfor %}
