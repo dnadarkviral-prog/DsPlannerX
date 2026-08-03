@@ -227,6 +227,10 @@ def get_db() -> Any:
 
 
 def init_postgres_db() -> None:
+    # A aplicação roda como função serverless na Vercel. Mais de uma instância
+    # pode iniciar ao mesmo tempo e tentar executar a migração. O advisory lock
+    # serializa essa etapa para impedir corridas de CREATE/ALTER TABLE.
+    migration_lock_key = 823_260_231
     statements = [
         """CREATE TABLE IF NOT EXISTS channels (
             id BIGSERIAL PRIMARY KEY,
@@ -340,17 +344,34 @@ def init_postgres_db() -> None:
         "ALTER TABLE channels ADD COLUMN IF NOT EXISTS schedule_mode TEXT NOT NULL DEFAULT 'standard'",
         "ALTER TABLE channel_titles ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ready'",
     ]
-    with closing(get_db()) as db:
-        for statement in statements:
-            db.execute(statement)
-        db.execute("UPDATE videos SET completed_at = updated_at WHERE status = 'completed' AND completed_at IS NULL")
-        db.execute("UPDATE videos SET status = 'production' WHERE status = 'todo'")
-        db.execute("UPDATE channels SET daily_script_goal = 1 WHERE daily_script_goal IS NULL OR daily_script_goal < 1")
-        db.execute("UPDATE channels SET daily_video_goal = 1 WHERE daily_video_goal IS NULL OR daily_video_goal < 1")
-        db.execute("UPDATE channels SET schedule_mode = 'standard' WHERE schedule_mode IS NULL OR schedule_mode NOT IN ('standard', 'custom')")
-        db.execute("UPDATE channels SET frequency_mode = 'interval' WHERE frequency_mode IS NULL OR frequency_mode NOT IN ('interval', 'days_off')")
-        db.execute("UPDATE channel_titles SET status = 'ready' WHERE status IS NULL OR status NOT IN ('ready', 'progress', 'completed')")
-        db.commit()
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        with closing(get_db()) as db:
+            try:
+                # Lock transacional: outras instâncias aguardam e, quando esta
+                # finalizar, apenas confirmam que a estrutura já existe.
+                db.execute("SELECT pg_advisory_xact_lock(?)", (migration_lock_key,))
+                for statement in statements:
+                    db.execute(statement)
+                db.execute("UPDATE videos SET completed_at = updated_at WHERE status = 'completed' AND completed_at IS NULL")
+                db.execute("UPDATE videos SET status = 'production' WHERE status = 'todo'")
+                db.execute("UPDATE channels SET daily_script_goal = 1 WHERE daily_script_goal IS NULL OR daily_script_goal < 1")
+                db.execute("UPDATE channels SET daily_video_goal = 1 WHERE daily_video_goal IS NULL OR daily_video_goal < 1")
+                db.execute("UPDATE channels SET schedule_mode = 'standard' WHERE schedule_mode IS NULL OR schedule_mode NOT IN ('standard', 'custom')")
+                db.execute("UPDATE channels SET frequency_mode = 'interval' WHERE frequency_mode IS NULL OR frequency_mode NOT IN ('interval', 'days_off')")
+                db.execute("UPDATE channel_titles SET status = 'ready' WHERE status IS NULL OR status NOT IN ('ready', 'progress', 'completed')")
+                db.commit()
+                return
+            except Exception as exc:
+                last_error = exc
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+        if attempt < 3:
+            time.sleep(0.8 * attempt)
+    if last_error is not None:
+        raise last_error
 
 def init_sqlite_db() -> None:
     schema = """
@@ -2220,11 +2241,14 @@ async def not_found(request: Request, _exc):
 
 try:
     init_db()
-except Exception:
+except Exception as exc:
     if IS_VERCEL:
-        CONFIG_ERRORS.append(
-            "Não foi possível conectar ou preparar o banco Postgres. Confira DATABASE_URL e faça um novo deploy."
-        )
+        # Mantém a mensagem segura na interface, mas registra o erro real nos
+        # logs da Vercel para facilitar qualquer diagnóstico futuro.
+        print(f"[DS-PLANNERX] Falha ao preparar o banco: {type(exc).__name__}: {exc}", flush=True)
+        message = "Não foi possível conectar ou preparar o banco Postgres. Confira DATABASE_URL e faça um novo deploy."
+        if message not in CONFIG_ERRORS:
+            CONFIG_ERRORS.append(message)
     else:
         raise
 
