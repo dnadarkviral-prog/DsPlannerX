@@ -231,13 +231,16 @@
   document.querySelectorAll('[data-schedule-mode-config]').forEach((config) => {
     const form = config.closest('form');
     if (!form) return;
+    const modal = config.closest('.modal');
     const radios = [...form.querySelectorAll('input[name="schedule_mode"]')];
     const standardFields = form.querySelector('[data-standard-schedule-fields]');
     const hint = form.querySelector('[data-custom-mode-hint]');
+    const customPlanner = modal?.querySelector('[data-custom-planner-settings]');
     const update = () => {
       const custom = radios.find((radio) => radio.checked)?.value === 'custom';
       if (standardFields) standardFields.hidden = custom;
       if (hint) hint.hidden = !custom;
+      if (customPlanner) customPlanner.hidden = !custom;
     };
     radios.forEach((radio) => radio.addEventListener('change', update));
     update();
@@ -406,12 +409,227 @@
       const count = Math.floor((days - 1) / Math.max(1, step)) + 1;
       const sample = [];
       for (let i = 0; i < Math.min(4, count); i += 1) sample.push(formatShortDate(addDays(first, i * step)));
-      preview.textContent = `${days} dias no trecho · ${count} vídeo${count === 1 ? '' : 's'} · datas: ${sample.join(', ')}${count > 4 ? '...' : ''}`;
+      preview.textContent = `${days} dias no período · ${count} vídeo${count === 1 ? '' : 's'} · datas: ${sample.join(', ')}${count > 4 ? '...' : ''}`;
     };
     [start, end, mode, value].forEach((input) => input?.addEventListener('input', update));
     mode?.addEventListener('change', update);
     update();
   });
+
+  const customPlansNode = document.getElementById('customPlansData');
+  let customPlans = [];
+  if (customPlansNode) {
+    try { customPlans = JSON.parse(customPlansNode.textContent || '[]'); } catch (_error) { customPlans = []; }
+  }
+
+  const monthBounds = (monthValue) => {
+    const match = String(monthValue || '').match(/^(\d{4})-(\d{2})$/);
+    const now = new Date();
+    const year = match ? Number(match[1]) : now.getFullYear();
+    const monthIndex = match ? Number(match[2]) - 1 : now.getMonth();
+    return {
+      first: new Date(year, monthIndex, 1, 12),
+      last: new Date(year, monthIndex + 1, 0, 12),
+    };
+  };
+
+  const isoLocalDate = (value) => `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+
+  document.querySelectorAll('[data-custom-plan-builder]').forEach((builder) => {
+    const monthInput = builder.querySelector('[data-custom-plan-month]');
+    const notesInput = builder.querySelector('[data-custom-plan-notes]');
+    const rulesList = builder.querySelector('[data-custom-rules-list]');
+    const ruleTemplate = builder.querySelector('[data-custom-rule-template]');
+    const addRuleButton = builder.querySelector('[data-add-custom-rule]');
+    const generateWeeksButton = builder.querySelector('[data-generate-month-weeks]');
+    const countNode = builder.querySelector('[data-custom-plan-count]');
+    const datesNode = builder.querySelector('[data-custom-plan-dates]');
+    const deleteSlot = builder.querySelector('[data-custom-plan-delete-slot]');
+    const channelId = builder.dataset.channelId;
+    const planMap = new Map(customPlans.map((plan) => [plan.year_month, plan]));
+    if (!monthInput || !rulesList || !ruleTemplate) return;
+
+    const normalizeRuleControls = (row) => {
+      const mode = row.querySelector('select[name="rule_frequency_modes"]');
+      const value = row.querySelector('input[name="rule_interval_days"]');
+      const suffix = row.querySelector('[data-custom-rule-suffix]');
+      const isDaysOff = mode?.value === 'days_off';
+      const raw = Number.parseInt(value?.value || (isDaysOff ? '0' : '1'), 10);
+      const normalized = isDaysOff ? Math.max(0, raw || 0) : Math.max(1, raw || 1);
+      if (value) {
+        value.min = isDaysOff ? '0' : '1';
+        value.value = String(normalized);
+      }
+      if (suffix) suffix.textContent = isDaysOff ? 'dias sem postar' : 'dias entre postagens';
+      return { mode: isDaysOff ? 'days_off' : 'interval', value: normalized, step: isDaysOff ? normalized + 1 : normalized };
+    };
+
+    const renumberRules = () => {
+      [...rulesList.querySelectorAll('[data-custom-rule-row]')].forEach((row, index) => {
+        const number = row.querySelector('[data-custom-rule-index]');
+        if (number) number.textContent = String(index + 1).padStart(2, '0');
+      });
+    };
+
+    const updateDeleteSlot = () => {
+      if (!deleteSlot) return;
+      deleteSlot.innerHTML = '';
+      const selected = monthInput.value;
+      if (!planMap.has(selected)) return;
+      const form = document.createElement('form');
+      form.method = 'post';
+      form.action = `/channels/${channelId}/custom-plans/${selected}/delete`;
+      form.innerHTML = '<button class="btn btn-danger" type="submit">🗑️ Remover planejamento deste mês</button>';
+      form.addEventListener('submit', (event) => {
+        if (!window.confirm('Remover o planejamento deste mês? Os cards de vídeo serão mantidos.')) event.preventDefault();
+      });
+      deleteSlot.appendChild(form);
+    };
+
+    const updateCustomSummary = () => {
+      const allDates = new Set();
+      [...rulesList.querySelectorAll('[data-custom-rule-row]')].forEach((row) => {
+        const startInput = row.querySelector('input[name="rule_start_dates"]');
+        const endInput = row.querySelector('input[name="rule_end_dates"]');
+        const preview = row.querySelector('[data-custom-rule-preview]');
+        const normalized = normalizeRuleControls(row);
+        if (!startInput?.value || !endInput?.value) {
+          if (preview) preview.textContent = 'Escolha o início e o fim deste período.';
+          return;
+        }
+        const first = parseLocalDate(startInput.value);
+        const last = parseLocalDate(endInput.value);
+        if (last < first) {
+          if (preview) preview.textContent = 'A data final precisa vir depois da inicial.';
+          return;
+        }
+        let current = new Date(first);
+        let count = 0;
+        const samples = [];
+        while (current <= last && count < 400) {
+          const key = isoLocalDate(current);
+          allDates.add(key);
+          if (samples.length < 5) samples.push(formatShortDate(current));
+          current = addDays(current, Math.max(1, normalized.step));
+          count += 1;
+        }
+        if (preview) {
+          const rhythm = normalized.mode === 'days_off'
+            ? `${normalized.value} dia${normalized.value === 1 ? '' : 's'} completo${normalized.value === 1 ? '' : 's'} sem postar`
+            : (normalized.value === 1 ? 'postagem diária' : `a cada ${normalized.value} dias`);
+          preview.textContent = `${count} vídeo${count === 1 ? '' : 's'} · ${rhythm} · ${samples.join(', ')}${count > samples.length ? '...' : ''}`;
+        }
+      });
+      const dates = [...allDates].sort();
+      if (countNode) countNode.textContent = String(dates.length);
+      if (datesNode) {
+        datesNode.innerHTML = dates.length
+          ? dates.map((item) => `<span>${formatShortDate(parseLocalDate(item))}</span>`).join('')
+          : 'Adicione um período de postagem para calcular.';
+      }
+      updateDeleteSlot();
+    };
+
+    const addRule = (data = {}) => {
+      const fragment = ruleTemplate.content.cloneNode(true);
+      const row = fragment.querySelector('[data-custom-rule-row]');
+      const bounds = monthBounds(monthInput.value);
+      const label = row.querySelector('input[name="rule_labels"]');
+      const start = row.querySelector('input[name="rule_start_dates"]');
+      const end = row.querySelector('input[name="rule_end_dates"]');
+      const mode = row.querySelector('select[name="rule_frequency_modes"]');
+      const value = row.querySelector('input[name="rule_interval_days"]');
+      if (label) label.value = data.label || '';
+      if (start) {
+        start.min = isoLocalDate(bounds.first);
+        start.max = isoLocalDate(bounds.last);
+        start.value = data.start_date || isoLocalDate(bounds.first);
+      }
+      if (end) {
+        end.min = isoLocalDate(bounds.first);
+        end.max = isoLocalDate(bounds.last);
+        end.value = data.end_date || isoLocalDate(bounds.last);
+      }
+      if (mode) mode.value = data.frequency_mode === 'days_off' ? 'days_off' : 'interval';
+      if (value) value.value = String(data.interval_days ?? 1);
+      row.querySelector('[data-remove-custom-rule]')?.addEventListener('click', () => {
+        row.remove();
+        renumberRules();
+        updateCustomSummary();
+      });
+      row.querySelectorAll('input, select').forEach((input) => {
+        input.addEventListener('input', updateCustomSummary);
+        input.addEventListener('change', updateCustomSummary);
+      });
+      rulesList.appendChild(fragment);
+      renumberRules();
+      updateCustomSummary();
+    };
+
+    const generateWeeks = () => {
+      rulesList.innerHTML = '';
+      const bounds = monthBounds(monthInput.value);
+      const lastDay = bounds.last.getDate();
+      let startDay = 1;
+      let week = 1;
+      while (startDay <= lastDay) {
+        const endDay = Math.min(startDay + 6, lastDay);
+        const start = new Date(bounds.first.getFullYear(), bounds.first.getMonth(), startDay, 12);
+        const end = new Date(bounds.first.getFullYear(), bounds.first.getMonth(), endDay, 12);
+        addRule({
+          label: `Semana ${week}`,
+          start_date: isoLocalDate(start),
+          end_date: isoLocalDate(end),
+          frequency_mode: 'interval',
+          interval_days: 1,
+        });
+        startDay = endDay + 1;
+        week += 1;
+      }
+      updateCustomSummary();
+    };
+
+    const loadPlan = (monthValue, createFresh = false) => {
+      const normalizedMonth = monthValue || builder.dataset.defaultMonth || monthValueFromDate(new Date());
+      monthInput.value = normalizedMonth;
+      rulesList.innerHTML = '';
+      const plan = createFresh ? null : planMap.get(normalizedMonth);
+      if (notesInput) notesInput.value = plan?.notes || '';
+      if (plan?.rules?.length) plan.rules.forEach((rule) => addRule(rule));
+      else generateWeeks();
+      updateDeleteSlot();
+      updateCustomSummary();
+    };
+
+    addRuleButton?.addEventListener('click', () => addRule({ label: `Período ${rulesList.children.length + 1}` }));
+    generateWeeksButton?.addEventListener('click', generateWeeks);
+    monthInput.addEventListener('change', () => loadPlan(monthInput.value, false));
+    builder.addEventListener('submit', (event) => {
+      if (!rulesList.querySelector('[data-custom-rule-row]')) {
+        event.preventDefault();
+        window.alert('Adicione pelo menos um período de postagem antes de salvar.');
+      }
+    });
+    builder._loadCustomPlan = loadPlan;
+    const selected = builder.dataset.selectedPlanMonth || monthInput.value || builder.dataset.defaultMonth;
+    loadPlan(selected, false);
+  });
+
+  document.querySelectorAll('[data-new-custom-plan]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const modal = document.getElementById('settingsModal');
+      const customRadio = modal?.querySelector('input[name="schedule_mode"][value="custom"]');
+      if (customRadio) {
+        customRadio.checked = true;
+        customRadio.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+      const builder = modal?.querySelector('[data-custom-plan-builder]');
+      if (builder?._loadCustomPlan) builder._loadCustomPlan(builder.dataset.defaultMonth, true);
+    });
+  });
+
+  const autoOpenModal = document.querySelector('[data-auto-open-modal]');
+  if (autoOpenModal?.dataset.autoOpenModal) setTimeout(() => openModal(autoOpenModal.dataset.autoOpenModal), 80);
 
   const titleFields = document.querySelector('[data-title-fields]');
   if (titleFields) {

@@ -306,6 +306,7 @@ def init_postgres_db() -> None:
             id BIGSERIAL PRIMARY KEY,
             channel_id BIGINT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
             year_month TEXT NOT NULL,
+            label TEXT NOT NULL DEFAULT '',
             start_date TEXT NOT NULL,
             end_date TEXT NOT NULL,
             frequency_mode TEXT NOT NULL DEFAULT 'interval',
@@ -343,6 +344,7 @@ def init_postgres_db() -> None:
         "ALTER TABLE channels ADD COLUMN IF NOT EXISTS daily_video_goal INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE channels ADD COLUMN IF NOT EXISTS schedule_mode TEXT NOT NULL DEFAULT 'standard'",
         "ALTER TABLE channel_titles ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ready'",
+        "ALTER TABLE schedule_rules ADD COLUMN IF NOT EXISTS label TEXT NOT NULL DEFAULT ''",
     ]
     last_error: Exception | None = None
     for attempt in range(1, 4):
@@ -360,6 +362,7 @@ def init_postgres_db() -> None:
                 db.execute("UPDATE channels SET schedule_mode = 'standard' WHERE schedule_mode IS NULL OR schedule_mode NOT IN ('standard', 'custom')")
                 db.execute("UPDATE channels SET frequency_mode = 'interval' WHERE frequency_mode IS NULL OR frequency_mode NOT IN ('interval', 'days_off')")
                 db.execute("UPDATE channel_titles SET status = 'ready' WHERE status IS NULL OR status NOT IN ('ready', 'progress', 'completed')")
+                db.execute("UPDATE schedule_rules SET label = REPLACE(label, 'Trecho ', 'Período ') WHERE label LIKE 'Trecho %'")
                 db.commit()
                 return
             except Exception as exc:
@@ -536,6 +539,11 @@ def init_sqlite_db() -> None:
             "UPDATE channel_titles SET status = 'ready' "
             "WHERE status IS NULL OR status NOT IN ('ready', 'progress', 'completed')"
         )
+
+        rule_columns = {row["name"] for row in db.execute("PRAGMA table_info(schedule_rules)").fetchall()}
+        if "label" not in rule_columns:
+            db.execute("ALTER TABLE schedule_rules ADD COLUMN label TEXT NOT NULL DEFAULT ''")
+        db.execute("UPDATE schedule_rules SET label = REPLACE(label, 'Trecho ', 'Período ') WHERE label LIKE 'Trecho %'")
 
         # Migração para o novo período explícito. A versão anterior misturava
         # "mês final" com "quantidade de dias", o que fazia 1 mês virar 30 dias.
@@ -1046,35 +1054,70 @@ def schedule_date_items(db: Any, channel_id: int, dates: list[date]) -> list[dic
 
 
 def month_calendar(db: Any, channel_id: int, year: int) -> list[dict[str, Any]]:
-    plans = db.execute(
-        "SELECT year_month, notes FROM monthly_plans WHERE channel_id = ? AND year_month LIKE ?",
+    """Retorna somente os meses que já possuem planejamento personalizado."""
+    rows = db.execute(
+        """SELECT mp.year_month, mp.notes,
+        (SELECT COUNT(*) FROM schedule_rules sr WHERE sr.channel_id = mp.channel_id AND sr.year_month = mp.year_month) AS rule_count,
+        (SELECT COUNT(*) FROM videos v WHERE v.channel_id = mp.channel_id AND v.planned_date LIKE mp.year_month || '-%') AS video_count
+        FROM monthly_plans mp
+        WHERE mp.channel_id = ? AND mp.year_month LIKE ?
+        ORDER BY mp.year_month""",
         (channel_id, f"{year:04d}-%"),
     ).fetchall()
-    plan_map = {row["year_month"]: row for row in plans}
-    result = []
-    for month in range(1, 13):
-        key = f"{year:04d}-{month:02d}"
-        video_row = db.execute(
-            "SELECT COUNT(*) AS total FROM videos WHERE channel_id = ? AND planned_date LIKE ?",
-            (channel_id, f"{key}-%"),
-        ).fetchone()
-        rule_row = db.execute(
-            "SELECT COUNT(*) AS total FROM schedule_rules WHERE channel_id = ? AND year_month = ?",
-            (channel_id, key),
-        ).fetchone()
-        total_videos = int(video_row["total"] or 0)
-        total_rules = int(rule_row["total"] or 0)
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        year_month = str(row["year_month"])
+        _, month = parse_year_month(year_month)
+        dates = custom_schedule_dates(db, channel_id, year_month)
         result.append({
-            "year_month": key,
+            "year_month": year_month,
             "short": MONTH_NAMES_PT[month][:3].upper(),
             "name": MONTH_NAMES_PT[month],
             "month": month,
-            "has_plan": key in plan_map or total_rules > 0 or total_videos > 0,
-            "video_count": total_videos,
-            "rule_count": total_rules,
+            "has_plan": True,
+            "video_count": int(row["video_count"] or 0),
+            "rule_count": int(row["rule_count"] or 0),
+            "date_count": len(dates),
+            "notes": str(row["notes"] or ""),
             "is_current": year == today_local().year and month == today_local().month,
         })
     return result
+
+
+def custom_plans_payload(db: Any, channel_id: int) -> list[dict[str, Any]]:
+    """Serializa planejamentos e regras para edição dentro das configurações."""
+    plans = db.execute(
+        "SELECT * FROM monthly_plans WHERE channel_id = ? ORDER BY year_month",
+        (channel_id,),
+    ).fetchall()
+    payload: list[dict[str, Any]] = []
+    for plan in plans:
+        year_month = str(plan["year_month"])
+        year, month = parse_year_month(year_month)
+        rules = db.execute(
+            "SELECT * FROM schedule_rules WHERE channel_id = ? AND year_month = ? ORDER BY start_date, id",
+            (channel_id, year_month),
+        ).fetchall()
+        dates = custom_schedule_dates(db, channel_id, year_month)
+        payload.append({
+            "year_month": year_month,
+            "month_label": f"{MONTH_NAMES_PT[month]} de {year}",
+            "notes": str(plan["notes"] or ""),
+            "date_count": len(dates),
+            "dates": [item.isoformat() for item in dates],
+            "rules": [
+                {
+                    "id": int(rule["id"]),
+                    "label": str(rule["label"] or "") if "label" in rule.keys() else "",
+                    "start_date": str(rule["start_date"]),
+                    "end_date": str(rule["end_date"]),
+                    "frequency_mode": normalize_frequency_mode(rule["frequency_mode"]),
+                    "interval_days": int(rule["interval_days"] or 1),
+                }
+                for rule in rules
+            ],
+        })
+    return payload
 
 
 CELEBRATION_MESSAGES = {
@@ -1363,7 +1406,7 @@ def health():
         "ok": not CONFIG_ERRORS,
         "database": "postgres" if USE_POSTGRES else "sqlite",
         "storage": "vercel-blob" if BLOB_ENABLED else "local",
-        "version": "2.3-vercel",
+        "version": "2.4.1-vercel",
     }
 
 
@@ -1480,7 +1523,7 @@ def create_channel(
 
 
 @app.get("/channels/{channel_id}", response_class=HTMLResponse, name="channel_detail")
-def channel_detail(request: Request, channel_id: int, status: str = "all", q: str = "", year: int | None = None):
+def channel_detail(request: Request, channel_id: int, status: str = "all", q: str = "", year: int | None = None, open_settings: int = 0, plan_month: str = ""):
     search = q.strip()
     with closing(get_db()) as db:
         channel = get_channel_or_404(db, channel_id)
@@ -1522,6 +1565,7 @@ def channel_detail(request: Request, channel_id: int, status: str = "all", q: st
         upcoming = schedule_date_items(db, channel_id, projection["dates"])
         calendar_year = min(max(int(year or today_local().year), 2020), 2100)
         month_cards = month_calendar(db, channel_id, calendar_year)
+        custom_plans = custom_plans_payload(db, channel_id)
     context = template_context(
         request,
         channel=channel,
@@ -1533,6 +1577,10 @@ def channel_detail(request: Request, channel_id: int, status: str = "all", q: st
         upcoming=upcoming,
         calendar_year=calendar_year,
         month_cards=month_cards,
+        custom_plans=custom_plans,
+        custom_plans_json=json.dumps(custom_plans, ensure_ascii=False),
+        selected_plan_month=valid_year_month(plan_month, today_local()) if plan_month else "",
+        open_settings=bool(open_settings),
         projection=projection,
         status_filter=status,
         search=search,
@@ -2011,9 +2059,111 @@ def delete_video(video_id: int):
     return redirect_to(f"/channels/{video['channel_id']}", "Card de vídeo excluído.")
 
 
-@app.get("/channels/{channel_id}/months/{year_month}", response_class=HTMLResponse, name="monthly_plan")
-def monthly_plan(request: Request, channel_id: int, year_month: str):
+@app.post("/channels/{channel_id}/custom-plans", name="save_custom_month_plan")
+async def save_custom_month_plan(request: Request, channel_id: int):
+    form = await request.form()
+    raw_month = str(form.get("year_month") or "").strip()
+    if not raw_month:
+        return redirect_to(f"/channels/{channel_id}?open_settings=1", "Escolha o mês do planejamento.", "error")
+    normalized_month = valid_year_month(raw_month)
+    year, month = parse_year_month(normalized_month)
+    lower = date(year, month, 1)
+    upper = date(year, month, calendar.monthrange(year, month)[1])
+    notes = str(form.get("notes") or "").strip()[:4000]
+
+    labels = [str(value).strip()[:120] for value in form.getlist("rule_labels")]
+    starts = [str(value).strip() for value in form.getlist("rule_start_dates")]
+    ends = [str(value).strip() for value in form.getlist("rule_end_dates")]
+    modes = [str(value).strip() for value in form.getlist("rule_frequency_modes")]
+    intervals = [str(value).strip() for value in form.getlist("rule_interval_days")]
+    total_rows = max(len(starts), len(ends), len(modes), len(intervals), len(labels))
+    parsed_rules: list[tuple[str, date, date, str, int]] = []
+
+    for index in range(total_rows):
+        start_raw = starts[index] if index < len(starts) else ""
+        end_raw = ends[index] if index < len(ends) else ""
+        if not start_raw and not end_raw:
+            continue
+        try:
+            start_date = datetime.strptime(start_raw, "%Y-%m-%d").date()
+            end_date = datetime.strptime(end_raw, "%Y-%m-%d").date()
+        except ValueError:
+            return redirect_to(
+                f"/channels/{channel_id}?open_settings=1&plan_month={normalized_month}",
+                f"Confira as datas da regra {index + 1}.", "error",
+            )
+        if start_date < lower or start_date > upper or end_date < lower or end_date > upper:
+            return redirect_to(
+                f"/channels/{channel_id}?open_settings=1&plan_month={normalized_month}",
+                f"A regra {index + 1} precisa ficar dentro de {MONTH_NAMES_PT[month]} de {year}.", "error",
+            )
+        if end_date < start_date:
+            return redirect_to(
+                f"/channels/{channel_id}?open_settings=1&plan_month={normalized_month}",
+                f"Na regra {index + 1}, a data final não pode vir antes da inicial.", "error",
+            )
+        mode = normalize_frequency_mode(modes[index] if index < len(modes) else "interval")
+        raw_interval = intervals[index] if index < len(intervals) else "1"
+        interval = normalize_frequency_value(raw_interval, mode)
+        label = labels[index] if index < len(labels) else ""
+        parsed_rules.append((label or f"Período {index + 1}", start_date, end_date, mode, interval))
+
+    if not parsed_rules:
+        return redirect_to(
+            f"/channels/{channel_id}?open_settings=1&plan_month={normalized_month}",
+            "Adicione pelo menos um período de postagem.", "error",
+        )
+
+    timestamp = now_iso()
+    with closing(get_db()) as db:
+        get_channel_or_404(db, channel_id)
+        db.execute(
+            """INSERT INTO monthly_plans (channel_id, year_month, notes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(channel_id, year_month) DO UPDATE SET notes = excluded.notes, updated_at = excluded.updated_at""",
+            (channel_id, normalized_month, notes, timestamp, timestamp),
+        )
+        db.execute("DELETE FROM schedule_rules WHERE channel_id = ? AND year_month = ?", (channel_id, normalized_month))
+        for label, start_date, end_date, mode, interval in parsed_rules:
+            db.execute(
+                """INSERT INTO schedule_rules (
+                    channel_id, year_month, label, start_date, end_date, frequency_mode, interval_days, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    channel_id, normalized_month, label, start_date.isoformat(), end_date.isoformat(),
+                    mode, interval, timestamp, timestamp,
+                ),
+            )
+        db.execute(
+            "UPDATE channels SET schedule_mode = 'custom', updated_at = ? WHERE id = ?",
+            (timestamp, channel_id),
+        )
+        db.commit()
+        calculated = len(custom_schedule_dates(db, channel_id, normalized_month))
+    return redirect_to(
+        f"/channels/{channel_id}/months/{normalized_month}",
+        f"Planejamento de {MONTH_NAMES_PT[month]} salvo com {calculated} data(s) de postagem.",
+    )
+
+
+@app.post("/channels/{channel_id}/custom-plans/{year_month}/delete", name="delete_custom_month_plan")
+def delete_custom_month_plan(channel_id: int, year_month: str):
     normalized_month = valid_year_month(year_month)
+    with closing(get_db()) as db:
+        get_channel_or_404(db, channel_id)
+        db.execute("DELETE FROM schedule_rules WHERE channel_id = ? AND year_month = ?", (channel_id, normalized_month))
+        db.execute("DELETE FROM monthly_plans WHERE channel_id = ? AND year_month = ?", (channel_id, normalized_month))
+        db.execute("UPDATE channels SET updated_at = ? WHERE id = ?", (now_iso(), channel_id))
+        db.commit()
+    return redirect_to(f"/channels/{channel_id}", "Planejamento mensal removido. Os cards de vídeo foram mantidos.")
+
+
+@app.get("/channels/{channel_id}/months/{year_month}", response_class=HTMLResponse, name="monthly_plan")
+def monthly_plan(
+    request: Request, channel_id: int, year_month: str, status: str = "all", q: str = "",
+):
+    normalized_month = valid_year_month(year_month)
+    search = q.strip()
     with closing(get_db()) as db:
         channel = get_channel_or_404(db, channel_id)
         plan = db.execute(
@@ -2026,13 +2176,21 @@ def monthly_plan(request: Request, channel_id: int, year_month: str):
         ).fetchall()
         dates = custom_schedule_dates(db, channel_id, normalized_month)
         schedule_items = schedule_date_items(db, channel_id, dates)
-        month_videos = db.execute(
-            "SELECT * FROM videos WHERE channel_id = ? AND planned_date LIKE ? ORDER BY planned_date, updated_at DESC",
-            (channel_id, f"{normalized_month}-%"),
-        ).fetchall()
+        sql = "SELECT * FROM videos WHERE channel_id = ? AND planned_date LIKE ?"
+        params: list[Any] = [channel_id, f"{normalized_month}-%"]
+        if status in STATUS_LABELS:
+            sql += " AND status = ?"
+            params.append(status)
+        if search:
+            sql += " AND (title LIKE ? OR description LIKE ?)"
+            like = f"%{search}%"
+            params.extend([like, like])
+        sql += " ORDER BY planned_date, CASE status WHEN 'production' THEN 1 ELSE 2 END, updated_at DESC"
+        month_videos = db.execute(sql, params).fetchall()
     year, month = parse_year_month(normalized_month)
     month_start = date(year, month, 1)
     month_end = date(year, month, calendar.monthrange(year, month)[1])
+    default_video_date = dates[0].isoformat() if dates else month_start.isoformat()
     return templates.TemplateResponse(
         request,
         "monthly_plan.html",
@@ -2047,7 +2205,10 @@ def monthly_plan(request: Request, channel_id: int, year_month: str):
             month_label=f"{MONTH_NAMES_PT[month]} de {year}",
             month_start=month_start.isoformat(),
             month_end=month_end.isoformat(),
+            default_video_date=default_video_date,
             total_dates=len(dates),
+            status_filter=status,
+            search=search,
         ),
     )
 
