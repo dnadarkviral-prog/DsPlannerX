@@ -1,5 +1,5 @@
 {% extends 'base.html' %}
-{% block title %}{{ channel.name }} — DS - PLANNERX{% endblock %}
+{% block title %}DS-PLANNERX{% endblock %}
 {% block page_title %}{{ channel.name }}{% endblock %}
 {% block topbar_actions %}
 <a class="btn btn-ghost" href="{{ url_for('dashboard') }}">← Voltar</a>
@@ -11,40 +11,86 @@
 <section class="channel-hero">
   <div class="hero-identity">
     <div class="hero-avatar {% if channel.image_path %}with-image{% endif %}"
-      {% if channel.image_path %}style="background-image:url('{{ media_url(channel.image_path) }}')"{% endif %}>
+      {% if channel.image_path %}style="background-image:url('{{ channel.image_path|asset_url }}')"{% endif %}>
       {% if not channel.image_path %}{{ channel.name[0]|upper }}{% endif %}
     </div>
-    <div><span class="eyebrow">PLANEJAMENTO DO CANAL</span><h2>{{ channel.name }}</h2><p>{{ channel.description or 'Adicione uma descrição nas configurações do canal.' }}</p></div>
+    <div>
+      <span class="eyebrow">{{ channel.name|upper }}</span>
+      <h2>{% if selected_month %}Planejamento de {{ selected_month_label }}{% else %}Planejamento geral do canal{% endif %}</h2>
+      <p>{% if selected_plan and selected_plan.notes %}{{ selected_plan.notes }}{% else %}{{ channel.description or 'Configure um mês para organizar metas, títulos e cards separadamente.' }}{% endif %}</p>
+    </div>
   </div>
-  <div class="hero-progress">
-    <div class="progress-circle" style="--progress:{{ stats.progress }}"><div><strong>{{ stats.progress|int }}%</strong><span>concluído</span></div></div>
-    <div><span>Meta de produção</span><strong>{{ stats.completed }} de {{ stats.goal }} vídeos</strong><small>{{ stats.remaining_titles }} títulos ainda precisam ser criados</small></div>
+  <div class="hero-metrics">
+    <section class="daily-goals-card" aria-label="Metas diárias de produção">
+      <div class="daily-goals-head">
+        <div><span>METAS DIÁRIAS</span><small>Hoje · {{ daily_stats.date_br }}</small></div>
+        <button class="daily-goals-settings" type="button" data-open-modal="dailyGoalsModal" title="Configurar metas diárias" aria-label="Configurar metas diárias">🎚️</button>
+      </div>
+      <div class="daily-goal-row {% if daily_stats.scripts_complete %}goal-complete{% endif %}">
+        <div class="daily-goal-line"><span>📜 Roteiros</span><strong>{{ daily_stats.scripts_done }}/{{ daily_stats.script_goal }}</strong></div>
+        <div class="daily-progress-track"><div class="daily-progress-fill script" style="width:{{ daily_stats.script_progress }}%"></div></div>
+      </div>
+      <div class="daily-goal-row {% if daily_stats.videos_complete %}goal-complete{% endif %}">
+        <div class="daily-goal-line"><span>🎬 Vídeos</span><strong>{{ daily_stats.videos_done }}/{{ daily_stats.video_goal }}</strong></div>
+        <div class="daily-progress-track"><div class="daily-progress-fill video" style="width:{{ daily_stats.video_progress }}%"></div></div>
+      </div>
+    </section>
+    <div class="hero-progress">
+      <div class="progress-circle" style="--progress:{{ stats.progress }}"><div><strong>{{ stats.progress|int }}%</strong><span>concluído</span></div></div>
+      <div><span>{% if selected_month %}Meta de produção · {{ selected_month_label }}{% else %}Meta de produção{% endif %}</span><strong>{{ stats.completed }} de {{ stats.goal }} vídeos</strong><small>{{ stats.remaining_titles }} vídeos ainda precisam ser concluídos</small></div>
+    </div>
   </div>
 </section>
 
 <section class="stats-grid channel-stats">
-  <article class="stat-card"><div class="stat-icon silver">📝</div><div><span>Pra fazer</span><strong>{{ stats.todo }}</strong></div></article>
-  <article class="stat-card"><div class="stat-icon orange">🎬</div><div><span>Em produção</span><strong>{{ stats.production }}</strong></div></article>
-  <article class="stat-card"><div class="stat-icon green">✅</div><div><span>Concluídos</span><strong>{{ stats.completed }}</strong></div></article>
-  <button class="stat-card stat-card-button" type="button" data-open-modal="titlesModal" aria-label="Abrir banco de títulos">
-    <div class="stat-icon purple">✍️</div>
-    <div><span>Títulos restantes</span><strong>{{ stats.remaining_titles }}</strong><small>Clique para adicionar os títulos</small></div>
-    <b class="stat-card-arrow">Abrir →</b>
-  </button>
+  <article class="stat-card year-planner-card">
+    <div class="year-planner-head">
+      <div><span>MESES COM PLANEJAMENTO</span><strong>{{ calendar_year }}</strong></div>
+      <div class="year-planner-actions">
+        <button type="button" class="year-add-plan" data-open-modal="settingsModal" data-new-custom-plan>＋ Novo mês</button>
+        <div class="year-nav">
+          <a href="{{ url_for('channel_detail', channel_id=channel.id) }}?year={{ calendar_year - 1 }}{% if selected_month %}&month={{ selected_month }}{% endif %}">‹</a>
+          <a href="{{ url_for('channel_detail', channel_id=channel.id) }}?year={{ calendar_year + 1 }}{% if selected_month %}&month={{ selected_month }}{% endif %}">›</a>
+        </div>
+      </div>
+    </div>
+    {% if month_cards %}
+    <div class="month-mini-grid configured-months">
+      {% for month in month_cards %}
+      <a class="month-mini-card planned {% if month.year_month == selected_month %}selected{% elif month.is_current %}current{% endif %}" href="{{ url_for('channel_detail', channel_id=channel.id) }}?month={{ month.year_month }}&year={{ month.year_month[:4] }}">
+        <b>{{ month.short }}</b><span>{{ month.planned_video_count }} vídeos</span><small>{{ month.date_count }} datas · {{ month.video_count }} cards · {{ month.rule_count }} períodos</small>
+      </a>
+      {% endfor %}
+    </div>
+    {% else %}
+    <button type="button" class="month-calendar-empty" data-open-modal="settingsModal" data-new-custom-plan>
+      <span>🗓️</span><b>Nenhum mês configurado em {{ calendar_year }}</b><small>Clique para criar o primeiro planejamento personalizado.</small>
+    </button>
+    {% endif %}
+  </article>
+  <article class="stat-card"><div class="stat-icon orange">🎬</div><div><span>Em produção{% if selected_month %} no mês{% endif %}</span><strong>{{ stats.production }}</strong></div></article>
+  <article class="stat-card"><div class="stat-icon green">✅</div><div><span>Concluídos{% if selected_month %} no mês{% endif %}</span><strong>{{ stats.completed }}</strong></div></article>
+  <article class="stat-card titles-remaining-card">
+    <div class="titles-remaining-content">
+      <span>Títulos restantes</span>
+      <strong>{{ stats.remaining_titles }}</strong>
+      <small>Diminuem somente quando um vídeo é concluído</small>
+    </div>
+  </article>
 </section>
 
 <section class="planner-layout">
   <div class="planner-main">
     <div class="section-heading inline">
-      <div><span class="eyebrow">CARDS DE PRODUÇÃO</span><h2>Vídeos planejados</h2></div>
+      <div><span class="eyebrow">CARDS DE PRODUÇÃO</span><h2>{% if selected_month %}Vídeos planejados para {{ selected_month_label }}{% else %}Vídeos planejados{% endif %}</h2></div>
       <button class="btn btn-primary" type="button" data-open-modal="videoModal">＋ Adicionar vídeo</button>
     </div>
 
     <form class="filter-bar" method="get">
-      <div class="search-box">⌕ <input name="q" value="{{ search }}" placeholder="Buscar título ou anotação"></div>
+      {% if selected_month %}<input type="hidden" name="month" value="{{ selected_month }}"><input type="hidden" name="year" value="{{ calendar_year }}">{% endif %}
+      <div class="search-box">⌕ <input name="q" value="{{ search }}" placeholder="Buscar título ou anotação{% if selected_month %} em {{ selected_month_label }}{% endif %}"></div>
       <select name="status" onchange="this.form.submit()">
         <option value="all" {% if status_filter == 'all' %}selected{% endif %}>Todos os status</option>
-        <option value="todo" {% if status_filter == 'todo' %}selected{% endif %}>Pra fazer</option>
         <option value="production" {% if status_filter == 'production' %}selected{% endif %}>Em produção</option>
         <option value="completed" {% if status_filter == 'completed' %}selected{% endif %}>Concluído</option>
       </select>
@@ -58,13 +104,13 @@
         <a href="{{ url_for('video_detail', video_id=video.id) }}" class="video-card-link">
           <div class="video-cover">
             {% if video.cover_image_path %}
-            <img src="{{ media_url(video.cover_image_path) }}" alt="Capa de {{ video.title }}" loading="lazy">
+            <img src="{{ video.cover_image_path|asset_url }}" alt="Capa de {{ video.title }}" loading="lazy">
             {% else %}
             <div class="video-cover-placeholder"><span>🖼️</span><small>Adicionar foto de capa</small></div>
             {% endif %}
             <div class="video-cover-overlay"></div>
             <div class="video-card-top">
-              <div class="video-icon">{{ '✅' if video.status == 'completed' else ('🎬' if video.status == 'production' else '📝') }}</div>
+              <div class="video-icon">{{ '✅' if video.status == 'completed' else '🎬' }}</div>
               <span class="video-date">{{ video.planned_date|date_br if video.planned_date else 'Sem data' }}</span>
             </div>
           </div>
@@ -74,8 +120,13 @@
           </div>
         </a>
         <div class="video-card-footer">
+          <button class="script-ready-toggle {% if video.script_completed_at %}ready{% endif %}" type="button" data-script-ready data-video-id="{{ video.id }}" data-ready="{{ 'true' if video.script_completed_at else 'false' }}" title="Marcar ou desmarcar o roteiro como pronto">
+            <span>{{ '✅' if video.script_completed_at else '📜' }}</span><b>{{ 'Roteiro pronto' if video.script_completed_at else 'Marcar roteiro' }}</b>
+          </button>
+          <button class="published-toggle {% if video.published_at %}published{% endif %}" type="button" data-published-toggle data-video-id="{{ video.id }}" data-published="{{ 'true' if video.published_at else 'false' }}" title="Marcar ou desmarcar como publicado">
+            <span>{{ '🟢' if video.published_at else '📡' }}</span><b>{{ 'Publicado' if video.published_at else 'Marcar publicado' }}</b>
+          </button>
           <select class="status-select {{ video.status }}" data-status-select data-video-id="{{ video.id }}">
-            <option value="todo" {% if video.status == 'todo' %}selected{% endif %}>📝 Pra fazer</option>
             <option value="production" {% if video.status == 'production' %}selected{% endif %}>🎬 Em produção</option>
             <option value="completed" {% if video.status == 'completed' %}selected{% endif %}>✅ Concluído</option>
           </select>
@@ -85,72 +136,92 @@
       {% endfor %}
     </div>
     {% else %}
-    <div class="empty-card-list"><div>🎞️</div><h3>Nenhum card encontrado</h3><p>Crie um vídeo ou altere os filtros da busca.</p><button class="btn btn-primary" type="button" data-open-modal="videoModal">＋ Criar card</button></div>
+    <div class="empty-card-list month-empty-cards"><div>🎞️</div><h3>{% if selected_month %}{{ selected_month_label }} está pronto para receber os cards{% else %}Nenhum card encontrado{% endif %}</h3><p>{% if selected_month %}Este planejamento começa vazio. Crie somente os vídeos deste mês, sem misturar com os demais.{% else %}Crie um vídeo ou configure um planejamento mensal.{% endif %}</p><button class="btn btn-primary" type="button" data-open-modal="videoModal">＋ Criar card</button></div>
     {% endif %}
   </div>
 
   <aside class="planner-sidebar">
     <section class="side-panel schedule-panel">
       <div class="panel-title"><span>🗓️</span><div><small>RITMO DE POSTAGEM</small><h3>Próximas publicações</h3></div></div>
-
-      <div class="plan-total-card">
-        <strong>{{ plan.total_videos }} vídeo{{ 's' if plan.total_videos != 1 else '' }}</strong>
-        <span>planejado{{ 's' if plan.total_videos != 1 else '' }} para {{ plan.label }}</span>
-      </div>
-      <div class="period-count-badge">🧩 {{ plan.period_count }} período{{ 's' if plan.period_count != 1 else '' }} configurado{{ 's' if plan.period_count != 1 else '' }}</div>
-
-      {% if plan.period_start and plan.period_end %}
-      <div class="plan-summary-grid">
-        <div><span>PERÍODO</span><strong>{{ plan.label }}</strong></div>
-        <div><span>DURAÇÃO</span><strong>{{ plan.duration_days }} dias</strong></div>
-      </div>
-      <div class="month-estimate">
-        <span>{{ plan.period_start|date_br }} até {{ plan.period_end|date_br }}</span>
-        <strong>{{ plan.total_videos }} vídeos</strong>
-      </div>
-      <div class="union-summary">
-        🧮 União de {{ plan.period_count }} período{{ 's' if plan.period_count != 1 else '' }}, sem repetir datas
-        ({{ plan.unique_dates }} data{{ 's' if plan.unique_dates != 1 else '' }}) = <b>{{ plan.total_videos }} vídeos</b>
-      </div>
+      {% if projection.schedule_mode == 'custom' %}
+      <div class="frequency-highlight"><strong>{{ projection.count }} vídeos</strong><span>{% if selected_month %}planejados para {{ selected_month_label }}{% else %}em planejamentos mensais{% endif %}</span></div>
+      <div class="frequency-rule-badge custom">🧩 {% if selected_month %}{{ selected_rules|length }} período(s) deste mês{% else %}Planejamento personalizado{% endif %}</div>
+      {% else %}
+      <div class="frequency-highlight"><strong>1 vídeo</strong><span>{{ projection.frequency_text }}</span></div>
+      <div class="frequency-rule-badge {{ projection.frequency_mode }}">{{ '📆 Intervalo entre datas' if projection.frequency_mode == 'interval' else '⏸️ Dias completos de pausa' }}</div>
       {% endif %}
-
-      {% if plan['items'] %}
+      <div class="planning-period-card">
+        <div><span>PERÍODO</span><strong>{{ projection.period_summary|capitalize }}</strong></div>
+        <div><span>DURAÇÃO</span><strong>{{ projection.period_days }} dias</strong></div>
+      </div>
+      <div class="month-estimate"><span>{{ projection.period_label }}</span><strong>{{ projection.count }} vídeos</strong></div>
+      <div class="calculation-formula">🧮 {{ projection.formula_text }} = <strong>{{ projection.count }} vídeos</strong></div>
       <div class="date-list">
-        {% for item in plan['items'] %}
-        <div class="date-item {{ item.status }}">
+        {% for item in upcoming %}
+        <div class="date-item {{ item.state }} {% if loop.first %}next{% endif %}">
           <span>{{ item.date.strftime('%d') }}</span>
-          <div>
-            <strong>{{ item.date.strftime('%d/%m/%Y') }}</strong>
-            <small>{{ item.label }}</small>
-          </div>
-          <b class="videos-day-badge">{{ item.videos }} vídeo{{ 's' if item.videos != 1 else '' }}</b>
+          <div><strong>{{ item.date.strftime('%d/%m/%Y') }}</strong><small>{{ item.label }}</small></div>
+          <em>{{ item.planned_count }} vídeo{{ 's' if item.planned_count != 1 else '' }}</em>
         </div>
+        {% else %}
+        <div class="schedule-empty">Abra um mês no calendário e crie regras personalizadas.</div>
         {% endfor %}
       </div>
-      {% else %}
-      <div class="schedule-empty"><span>📭</span><strong>Nenhuma data calculada</strong><small>Adicione um período de postagem.</small></div>
-      {% endif %}
-
-      <button class="btn btn-secondary full" type="button" data-open-modal="periodsModal">⚙️ Ajustar frequência</button>
+      <button class="btn btn-secondary full" type="button" data-open-modal="settingsModal">⚙️ Ajustar frequência</button>
     </section>
 
     <section class="side-panel title-panel">
-      <div class="panel-title"><span>💡</span><div><small>CONTROLE DE TÍTULOS</small><h3>Meta do canal</h3></div></div>
+      <div class="panel-title"><span>💡</span><div><small>CONTROLE DE TÍTULOS</small><h3>{% if selected_month %}Banco de {{ selected_month_label }}{% else %}Meta do canal{% endif %}</h3></div></div>
       <div class="title-number"><strong>{{ stats.title_count }}</strong><span>títulos adicionados</span></div>
       <div class="progress-head"><span>Banco preenchido</span><strong>{{ stats.title_count }}/{{ stats.goal }}</strong></div>
       <div class="progress-track"><div class="progress-fill" style="width:{{ stats.title_progress }}%"></div></div>
-      <div class="remaining-box"><span>Ainda faltam</span><strong>{{ stats.remaining_titles }} títulos</strong></div>
-      <button class="btn btn-secondary full title-bank-button" type="button" data-open-modal="titlesModal">✍️ Abrir banco de títulos</button>
+      <div class="remaining-box"><span>Ainda faltam no banco</span><strong>{{ stats.bank_remaining_titles }} títulos</strong></div>
+      <button class="btn btn-secondary full title-bank-button" type="button" data-open-modal="titlesModal">✍️ Abrir banco de títulos{% if selected_month %} do mês{% endif %}</button>
     </section>
   </aside>
 </section>
 
 
+<div class="modal" id="dailyGoalsModal" aria-hidden="true">
+  <div class="modal-backdrop" data-close-modal></div>
+  <div class="modal-dialog daily-goals-dialog">
+    <div class="modal-head">
+      <div><span class="eyebrow">CONTROLE DO DIA</span><h2>Configurar metas diárias</h2></div>
+      <button class="icon-button" type="button" data-close-modal>✕</button>
+    </div>
+    <div class="daily-goals-modal-intro">
+      <span class="daily-lever-icon">🎚️</span>
+      <div><strong>Defina seu ritmo de produção</strong><p>As barras começam em zero a cada novo dia. Elas são independentes da meta mensal, do calendário e do Banco de Títulos.</p></div>
+    </div>
+    <form action="{{ url_for('save_daily_goals', channel_id=channel.id) }}" method="post" class="form-grid daily-goals-form">
+      <input type="hidden" name="return_to" value="{{ url_for('channel_detail', channel_id=channel.id) }}{% if selected_month %}?month={{ selected_month }}&year={{ calendar_year }}{% endif %}">
+      <label class="field">
+        <span>Meta de roteiros diários</span>
+        <div class="input-suffix"><input type="number" name="daily_script_goal" min="1" max="999" value="{{ daily_stats.script_goal }}" required><span>roteiros/dia</span></div>
+        <small class="field-help">Avança ao marcar “Roteiro pronto” em um card.</small>
+      </label>
+      <label class="field">
+        <span>Meta de vídeos diários</span>
+        <div class="input-suffix"><input type="number" name="daily_video_goal" min="1" max="999" value="{{ daily_stats.video_goal }}" required><span>vídeos/dia</span></div>
+        <small class="field-help">Avança ao mudar o card para “Concluído”.</small>
+      </label>
+      <div class="daily-goal-live-summary span-2">
+        <div><span>Roteiros feitos hoje</span><strong>{{ daily_stats.scripts_done }}</strong></div>
+        <div><span>Vídeos concluídos hoje</span><strong>{{ daily_stats.videos_done }}</strong></div>
+      </div>
+      <div class="modal-actions span-2">
+        <button type="button" class="btn btn-ghost" data-close-modal>Cancelar</button>
+        <button type="submit" class="btn btn-primary">💾 Salvar metas diárias</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <div class="modal" id="titlesModal" aria-hidden="true">
   <div class="modal-backdrop" data-close-modal></div>
   <div class="modal-dialog titles-dialog">
     <div class="modal-head">
-      <div><span class="eyebrow">BANCO DE TÍTULOS</span><h2>Adicionar títulos do canal</h2></div>
+      <div><span class="eyebrow">BANCO DE TÍTULOS</span><h2>{% if selected_month %}Títulos de {{ selected_month_label }}{% else %}Adicionar títulos do canal{% endif %}</h2></div>
       <button class="icon-button" type="button" data-close-modal>✕</button>
     </div>
     <div class="title-manager-summary">
@@ -163,19 +234,35 @@
         <strong><b data-title-filled-count>{{ stats.title_count }}</b>/{{ stats.goal }}</strong>
       </div>
       <div>
-        <span>Restantes</span>
-        <strong data-title-remaining-count>{{ stats.remaining_titles }}</strong>
+        <span>Restantes no banco</span>
+        <strong data-title-remaining-count>{{ stats.bank_remaining_titles }}</strong>
       </div>
     </div>
     <div class="title-manager-progress">
       <div class="progress-track"><div class="progress-fill" data-title-progress style="width:{{ stats.title_progress }}%"></div></div>
-      <small>Preencha os campos abaixo. A quantidade acompanha a meta definida nas configurações do canal.</small>
+      <small>{% if selected_month %}Este banco é exclusivo de {{ selected_month_label }} e acompanha os {{ stats.goal }} vídeos planejados para o mês.{% else %}Preencha os campos abaixo. A quantidade acompanha a meta geral do canal.{% endif %}</small>
+    </div>
+    <div class="title-status-legend" aria-label="Legenda das cores dos títulos">
+      <span><i class="ready"></i> Roxo · Permitido para uso</span>
+      <span><i class="progress"></i> Amarelo · Em andamento</span>
+      <span><i class="completed"></i> Verde · Concluído</span>
+      <small>As cores são etiquetas de consulta e não alteram metas, barras, vídeos ou qualquer outro campo.</small>
     </div>
     <form action="{{ url_for('save_channel_titles', channel_id=channel.id) }}" method="post" class="title-manager-form">
+      {% if selected_month %}<input type="hidden" name="year_month" value="{{ selected_month }}">{% endif %}
       <div class="title-fields-list" data-title-fields data-title-goal="{{ stats.goal }}">
         {% for slot in title_slots %}
-        <div class="title-field-row" data-title-row>
-          <span class="title-index">{{ '%02d'|format(slot.position) }}</span>
+        <div class="title-field-row title-status-{{ slot.status }}" data-title-row data-title-status="{{ slot.status }}">
+          <div class="title-status-column" data-title-status-box>
+            <div class="title-status-options" aria-label="Status do título {{ slot.position }}">
+              <button type="button" class="title-status-dot ready {% if slot.status == 'ready' %}active{% endif %}" data-title-status-option="ready" aria-label="Permitido para uso" aria-pressed="{{ 'true' if slot.status == 'ready' else 'false' }}" title="Permitido para uso"></button>
+              <button type="button" class="title-status-dot progress {% if slot.status == 'progress' %}active{% endif %}" data-title-status-option="progress" aria-label="Em andamento" aria-pressed="{{ 'true' if slot.status == 'progress' else 'false' }}" title="Em andamento"></button>
+              <button type="button" class="title-status-dot completed {% if slot.status == 'completed' %}active{% endif %}" data-title-status-option="completed" aria-label="Concluído" aria-pressed="{{ 'true' if slot.status == 'completed' else 'false' }}" title="Concluído"></button>
+            </div>
+            <span class="title-index">{{ '%02d'|format(slot.position) }}</span>
+            <small data-title-status-label>{{ 'Para uso' if slot.status == 'ready' else ('Em andamento' if slot.status == 'progress' else 'Concluído') }}</small>
+            <input type="hidden" name="title_statuses" value="{{ slot.status }}" data-title-status-input>
+          </div>
           <label>
             <span>Título {{ slot.position }}</span>
             <textarea name="titles" rows="2" maxlength="500" placeholder="Digite o título planejado para o vídeo {{ slot.position }}">{{ slot.title }}</textarea>
@@ -195,11 +282,12 @@
 <div class="modal" id="videoModal" aria-hidden="true">
   <div class="modal-backdrop" data-close-modal></div>
   <div class="modal-dialog large">
-    <div class="modal-head"><div><span class="eyebrow">NOVO CARD</span><h2>Adicionar vídeo</h2></div><button class="icon-button" type="button" data-close-modal>✕</button></div>
-    <form action="{{ url_for('create_video', channel_id=channel.id) }}" method="post" enctype="multipart/form-data" class="form-grid">
+    <div class="modal-head"><div><span class="eyebrow">NOVO CARD{% if selected_month %} · {{ selected_month_label|upper }}{% endif %}</span><h2>Adicionar vídeo{% if selected_month %} ao mês{% endif %}</h2></div><button class="icon-button" type="button" data-close-modal>✕</button></div>
+    <form action="{{ url_for('create_video', channel_id=channel.id) }}" method="post" enctype="multipart/form-data" class="form-grid" data-cloud-upload-form>
+      <input type="hidden" name="return_to" value="{{ url_for('channel_detail', channel_id=channel.id) }}{% if selected_month %}?month={{ selected_month }}&year={{ calendar_year }}{% endif %}">
       <label class="field span-2"><span>Título do vídeo</span><input name="title" required placeholder="Digite o título planejado"></label>
-      <label class="field"><span>Status inicial</span><select name="status"><option value="todo">📝 Pra fazer</option><option value="production">🎬 Em produção</option><option value="completed">✅ Concluído</option></select></label>
-      <label class="field"><span>Data de publicação</span><input type="date" name="planned_date"></label>
+      <label class="field"><span>Status inicial</span><select name="status"><option value="production">🎬 Em produção</option><option value="completed">✅ Concluído</option></select></label>
+      <label class="field"><span>Data de publicação</span><input type="date" name="planned_date" value="{{ default_video_date }}" {% if selected_month %}min="{{ month_start }}" max="{{ month_end }}" required{% endif %}></label>
       <label class="field span-2"><span>Descrição ou observação</span><textarea name="description" rows="4" placeholder="Ideia, gancho, tema, observações..."></textarea></label>
       <div class="field span-2">
         <span>Foto de capa do card <small class="field-hint">opcional · recomendação 16:9</small></span>
@@ -217,93 +305,128 @@
   </div>
 </div>
 
-<div class="modal" id="periodsModal" aria-hidden="true">
-  <div class="modal-backdrop" data-close-modal></div>
-  <div class="modal-dialog periods-dialog">
-    <div class="modal-head">
-      <div><span class="eyebrow">RITMO DE POSTAGEM</span><h2>Períodos e vídeos por dia</h2></div>
-      <button class="icon-button" type="button" data-close-modal>✕</button>
-    </div>
-
-    <div class="period-rule-note">
-      <strong>Como funciona a sobreposição?</strong>
-      <span>A mesma data aparece uma única vez. Quando dois períodos coincidem, vale a maior quantidade de vídeos por dia configurada.</span>
-    </div>
-
-    <section class="new-period-card">
-      <div class="period-card-head"><div><small>NOVO PERÍODO</small><h3>Adicionar regra de postagem</h3></div><span>＋</span></div>
-      <form action="{{ url_for('create_posting_period', channel_id=channel.id) }}" method="post" class="form-grid period-form">
-        <label class="field span-2"><span>Nome do período</span><input name="name" value="Novo período" maxlength="120" required></label>
-        <label class="field"><span>Data inicial</span><input type="date" name="start_date" value="{{ new_period_start }}" required></label>
-        <label class="field"><span>Data final</span><input type="date" name="end_date" value="{{ new_period_end }}" required></label>
-        <div class="field span-2 frequency-config" data-frequency-config>
-          <span>Como contar a frequência?</span>
-          <div class="frequency-mode-options">
-            <label class="frequency-mode-option"><input type="radio" name="frequency_mode" value="interval" checked><span><b>📆 Intervalo entre postagens</b><small>Ex.: 27, 29, 31.</small></span></label>
-            <label class="frequency-mode-option"><input type="radio" name="frequency_mode" value="days_off"><span><b>⏸️ Dias completos sem postar</b><small>Ex.: 27, 30, 02.</small></span></label>
-          </div>
-        </div>
-        <label class="field" data-frequency-value-field>
-          <span data-frequency-value-label>Publicar a cada quantos dias?</span>
-          <div class="input-suffix"><input type="number" name="interval_days" min="1" value="2" required><span data-frequency-value-suffix>dias entre postagens</span></div>
-          <small class="frequency-help" data-frequency-help></small>
-        </label>
-        <label class="field videos-per-day-field"><span>Vídeos por dia</span><div class="input-suffix"><input type="number" name="videos_per_day" min="1" max="50" value="1" required><span>vídeo(s)</span></div><small>Quantidade real publicada em cada data.</small></label>
-        <div class="modal-actions span-2"><button type="submit" class="btn btn-primary">＋ Adicionar período</button></div>
-      </form>
-    </section>
-
-    <div class="period-list">
-      {% for period in periods %}
-      <article class="period-editor-card">
-        <div class="period-card-head">
-          <div><small>PERÍODO {{ loop.index }}</small><h3>{{ period.name }}</h3></div>
-          <span class="period-daily-pill">{{ period.videos_per_day }} vídeo{{ 's' if period.videos_per_day != 1 else '' }}/dia</span>
-        </div>
-        <form action="{{ url_for('edit_posting_period', period_id=period.id) }}" method="post" class="form-grid period-form">
-          <label class="field span-2"><span>Nome do período</span><input name="name" value="{{ period.name }}" maxlength="120" required></label>
-          <label class="field"><span>Data inicial</span><input type="date" name="start_date" value="{{ period.start_date.isoformat() }}" required></label>
-          <label class="field"><span>Data final</span><input type="date" name="end_date" value="{{ period.end_date.isoformat() }}" required></label>
-          <div class="field span-2 frequency-config" data-frequency-config>
-            <span>Como contar a frequência?</span>
-            <div class="frequency-mode-options">
-              <label class="frequency-mode-option"><input type="radio" name="frequency_mode" value="interval" {% if period.frequency_mode == 'interval' %}checked{% endif %}><span><b>📆 Intervalo entre postagens</b><small>Ex.: 27, 29, 31.</small></span></label>
-              <label class="frequency-mode-option"><input type="radio" name="frequency_mode" value="days_off" {% if period.frequency_mode == 'days_off' %}checked{% endif %}><span><b>⏸️ Dias completos sem postar</b><small>Ex.: 27, 30, 02.</small></span></label>
-            </div>
-          </div>
-          <label class="field" data-frequency-value-field>
-            <span data-frequency-value-label>{{ 'Quantos dias completos sem postar?' if period.frequency_mode == 'days_off' else 'Publicar a cada quantos dias?' }}</span>
-            <div class="input-suffix"><input type="number" name="interval_days" min="{{ 0 if period.frequency_mode == 'days_off' else 1 }}" value="{{ period.interval_days }}" required><span data-frequency-value-suffix>{{ 'dias sem postar' if period.frequency_mode == 'days_off' else 'dias entre postagens' }}</span></div>
-            <small class="frequency-help" data-frequency-help></small>
-          </label>
-          <label class="field videos-per-day-field"><span>Vídeos por dia</span><div class="input-suffix"><input type="number" name="videos_per_day" min="1" max="50" value="{{ period.videos_per_day }}" required><span>vídeo(s)</span></div><small>Use 2 apenas quando realmente publicar dois vídeos na mesma data.</small></label>
-          <div class="period-form-actions span-2"><button type="submit" class="btn btn-secondary">💾 Salvar período</button></div>
-        </form>
-        <form action="{{ url_for('delete_posting_period', period_id=period.id) }}" method="post" data-confirm="Excluir este período de postagem?" class="period-delete-form">
-          <button type="submit" class="btn btn-danger btn-small">🗑️ Excluir período</button>
-        </form>
-      </article>
-      {% else %}
-      <div class="schedule-empty"><span>🧩</span><strong>Nenhum período cadastrado</strong><small>Use o formulário acima para adicionar o primeiro.</small></div>
-      {% endfor %}
-    </div>
-  </div>
-</div>
-
 <div class="modal" id="settingsModal" aria-hidden="true">
   <div class="modal-backdrop" data-close-modal></div>
-  <div class="modal-dialog large">
-    <div class="modal-head"><div><span class="eyebrow">CONFIGURAÇÕES</span><h2>Editar informações do canal</h2></div><button class="icon-button" type="button" data-close-modal>✕</button></div>
-    <form action="{{ url_for('edit_channel', channel_id=channel.id) }}" method="post" enctype="multipart/form-data" class="form-grid">
+  <div class="modal-dialog large settings-dialog-xl">
+    <div class="modal-head"><div><span class="eyebrow">CONFIGURAÇÕES</span><h2>Canal e planejamento de postagens</h2></div><button class="icon-button" type="button" data-close-modal>✕</button></div>
+
+    <form action="{{ url_for('edit_channel', channel_id=channel.id) }}" method="post" enctype="multipart/form-data" class="form-grid settings-main-form" data-cloud-upload-form>
+      <input type="hidden" name="return_to" value="{{ url_for('channel_detail', channel_id=channel.id) }}{% if selected_month %}?month={{ selected_month }}&year={{ calendar_year }}{% endif %}">
       <label class="field span-2"><span>Nome do canal</span><input name="name" value="{{ channel.name }}" required></label>
       <label class="field span-2"><span>Descrição</span><textarea name="description" rows="3">{{ channel.description }}</textarea></label>
       <label class="field"><span>Meta de títulos/vídeos</span><input type="number" name="title_goal" min="1" value="{{ channel.title_goal }}" required></label>
+      <div class="field span-2 schedule-mode-config" data-schedule-mode-config>
+        <span>Modo de planejamento das postagens</span>
+        <div class="schedule-mode-options">
+          <label class="schedule-mode-option">
+            <input type="radio" name="schedule_mode" value="standard" {% if channel.schedule_mode != 'custom' %}checked{% endif %}>
+            <span><b>📆 Ritmo padrão</b><small>Uma frequência fixa para todo o período.</small></span>
+          </label>
+          <label class="schedule-mode-option">
+            <input type="radio" name="schedule_mode" value="custom" {% if channel.schedule_mode == 'custom' %}checked{% endif %}>
+            <span><b>🧩 Personalizado por mês</b><small>Crie um calendário diferente para cada mês e para cada semana.</small></span>
+          </label>
+        </div>
+      </div>
+      <div class="custom-mode-hint span-2" data-custom-mode-hint {% if channel.schedule_mode != 'custom' %}hidden{% endif %}>
+        Escolha o mês, monte quantos períodos de postagem precisar e confira todas as datas antes de salvar. Somente os meses salvos aparecem no calendário do canal.
+      </div>
+
+      <div class="standard-schedule-fields span-2" data-standard-schedule-fields {% if channel.schedule_mode == 'custom' %}hidden{% endif %}>
+        <div class="field span-2 frequency-config" data-frequency-config>
+          <span>Como calcular o ritmo de postagem?</span>
+          <div class="frequency-mode-options">
+            <label class="frequency-mode-option">
+              <input type="radio" name="frequency_mode" value="interval" {% if channel.frequency_mode == 'interval' %}checked{% endif %}>
+              <span><b>📆 Intervalo entre postagens</b><small>Ex.: 27, 29, 31 — dia sim, dia não.</small></span>
+            </label>
+            <label class="frequency-mode-option">
+              <input type="radio" name="frequency_mode" value="days_off" {% if channel.frequency_mode == 'days_off' %}checked{% endif %}>
+              <span><b>⏸️ Dias completos sem postar</b><small>Ex.: 27, 30, 02 — dois dias inteiros de pausa.</small></span>
+            </label>
+          </div>
+        </div>
+        <label class="field" data-frequency-value-field>
+          <span data-frequency-value-label>{{ 'Quantos dias completos sem postar?' if channel.frequency_mode == 'days_off' else 'Publicar a cada quantos dias?' }}</span>
+          <div class="input-suffix"><input type="number" name="interval_days" min="{{ 0 if channel.frequency_mode == 'days_off' else 1 }}" value="{{ channel.interval_days }}" required><span data-frequency-value-suffix>{{ 'dias sem postar' if channel.frequency_mode == 'days_off' else 'dias entre postagens' }}</span></div>
+          <small class="frequency-help" data-frequency-help></small>
+        </label>
+        <label class="field"><span>Data da primeira postagem</span><input type="date" name="start_date" value="{{ channel.start_date }}" required></label>
+        <div class="field span-2 period-config" data-period-config>
+          <span>Como definir o período do planejamento?</span>
+          <div class="period-mode-options">
+            <label class="period-mode-option"><input type="radio" name="period_mode" value="months" {% if channel.period_mode == 'months' %}checked{% endif %}><span><b>🗓️ Mês(es) completo(s)</b><small>27/07 + 1 mês termina exatamente em 27/08.</small></span></label>
+            <label class="period-mode-option"><input type="radio" name="period_mode" value="days" {% if channel.period_mode == 'days' %}checked{% endif %}><span><b>🔢 Quantidade exata de dias</b><small>Defina o total exato de dias do ciclo.</small></span></label>
+            <label class="period-mode-option"><input type="radio" name="period_mode" value="month_end" {% if channel.period_mode == 'month_end' %}checked{% endif %}><span><b>📅 Até o fim de um mês</b><small>Calcula até o último dia do mês escolhido.</small></span></label>
+          </div>
+        </div>
+        <label class="field" data-period-value-field><span data-period-value-label>{{ 'Quantidade exata de dias' if channel.period_mode == 'days' else 'Quantidade de meses completos' }}</span><div class="input-suffix"><input type="number" name="period_value" min="1" max="{{ 7300 if channel.period_mode == 'days' else 120 }}" value="{{ channel.period_value }}" required data-period-value><span data-period-value-suffix>{{ 'dias' if channel.period_mode == 'days' else ('meses' if channel.period_value != 1 else 'mês') }}</span></div><small class="field-help" data-period-value-help></small></label>
+        <label class="field" data-planning-month-field {% if channel.period_mode != 'month_end' %}hidden{% endif %}><span>Mês final do planejamento</span><input type="month" name="planning_month" value="{{ channel.planning_month }}" data-planning-month><small class="field-help">A agenda vai até o último dia do mês escolhido.</small></label>
+        <div class="period-preview span-2" data-period-help></div>
+      </div>
+
       <label class="field file-field"><span>Trocar imagem</span><input type="file" name="image" accept="image/*"></label>
-      <div class="modal-actions span-2"><button type="button" class="btn btn-ghost" data-close-modal>Cancelar</button><button type="submit" class="btn btn-primary">💾 Salvar alterações</button></div>
+      <div class="modal-actions span-2"><button type="button" class="btn btn-ghost" data-close-modal>Cancelar</button><button type="submit" class="btn btn-secondary">💾 Salvar dados do canal</button></div>
     </form>
+
+    <section class="custom-planner-settings" data-custom-planner-settings {% if channel.schedule_mode != 'custom' %}hidden{% endif %}>
+      <div class="custom-planner-head">
+        <div><span class="eyebrow">PLANEJAMENTO PERSONALIZADO</span><h3>Criar ou editar um mês</h3><p>Monte cada semana separadamente. O PlannerX une as regras, remove datas repetidas e calcula o total de vídeos.</p></div>
+        <button type="button" class="btn btn-ghost" data-new-custom-plan>＋ Novo planejamento</button>
+      </div>
+
+      {% if custom_plans %}
+      <div class="saved-plan-chips" aria-label="Planejamentos já criados">
+        {% for item in custom_plans %}
+        <a href="{{ url_for('channel_detail', channel_id=channel.id) }}?month={{ item.year_month }}&year={{ item.year_month[:4] }}&open_settings=1&plan_month={{ item.year_month }}" class="saved-plan-chip {% if selected_plan_month == item.year_month %}active{% endif %}">
+          <b>{{ item.month_label }}</b><span>{{ item.planned_video_count }} vídeos · {{ item.date_count }} datas</span>
+        </a>
+        {% endfor %}
+      </div>
+      {% endif %}
+
+      <form action="{{ url_for('save_custom_month_plan', channel_id=channel.id) }}" method="post" class="custom-plan-form" data-custom-plan-builder data-channel-id="{{ channel.id }}" data-default-month="{{ default_planning_month }}" data-selected-plan-month="{{ selected_plan_month }}">
+        <div class="custom-plan-basics">
+          <label class="field"><span>Mês do planejamento</span><input type="month" name="year_month" value="{{ selected_plan_month or default_planning_month }}" required data-custom-plan-month></label>
+          <label class="field span-2"><span>Informações do planejamento</span><textarea name="notes" rows="3" maxlength="4000" placeholder="Ex.: foco em histórias de patrimônio, 1 vídeo por dia na primeira semana e dia sim/dia não no restante do mês." data-custom-plan-notes></textarea></label>
+        </div>
+
+        <div class="custom-rule-toolbar">
+          <div><span>PERÍODOS DE POSTAGEM</span><small>Você pode gerar as semanas automaticamente ou criar períodos livres.</small></div>
+          <div><button type="button" class="btn btn-ghost" data-generate-month-weeks>🗓️ Gerar semanas</button><button type="button" class="btn btn-secondary" data-add-custom-rule>＋ Adicionar novo período</button></div>
+        </div>
+        <div class="custom-rules-list" data-custom-rules-list></div>
+
+        <template data-custom-rule-template>
+          <article class="custom-rule-row" data-custom-rule-row>
+            <div class="custom-rule-index" data-custom-rule-index>01</div>
+            <label class="field"><span>Começa em</span><input type="date" name="rule_start_dates" required></label>
+            <label class="field"><span>Termina em</span><input type="date" name="rule_end_dates" required></label>
+            <label class="field"><span>Ritmo</span><select name="rule_frequency_modes"><option value="interval">📆 Intervalo entre postagens</option><option value="days_off">⏸️ Dias completos sem postar</option></select></label>
+            <label class="field"><span>Quantidade</span><div class="input-suffix"><input type="number" name="rule_interval_days" min="1" value="1" required><span data-custom-rule-suffix>dias entre postagens</span></div></label>
+            <label class="field"><span>Vídeos por dia</span><div class="input-suffix"><input type="number" name="rule_videos_per_day" min="1" max="999" value="1" required><span>vídeos</span></div></label>
+            <button type="button" class="icon-button custom-rule-remove" data-remove-custom-rule title="Remover período">🗑️</button>
+            <div class="custom-rule-preview" data-custom-rule-preview></div>
+          </article>
+        </template>
+
+        <section class="custom-plan-summary">
+          <div class="custom-plan-summary-number"><span>TOTAL CALCULADO</span><strong data-custom-plan-count>0</strong><small><b data-custom-plan-date-count>0</b> datas únicas</small></div>
+          <div class="custom-plan-dates"><span>DATAS UNIFICADAS</span><div data-custom-plan-dates>Adicione um período de postagem para calcular.</div></div>
+        </section>
+
+        <div class="custom-plan-actions">
+          <div class="custom-plan-delete-slot" data-custom-plan-delete-slot></div>
+          <button class="btn btn-primary" type="submit">💾 Salvar planejamento do mês</button>
+        </div>
+      </form>
+      <script type="application/json" id="customPlansData">{{ custom_plans|tojson }}</script>
+    </section>
+
     <form action="{{ url_for('delete_channel', channel_id=channel.id) }}" method="post" class="danger-zone" data-confirm="Excluir este canal e todos os seus cards e arquivos?">
       <div><strong>Excluir canal</strong><span>Esta ação remove cards, textos e anexos.</span></div><button class="btn btn-danger" type="submit">🗑️ Excluir</button>
     </form>
   </div>
 </div>
+{% if open_settings %}<div hidden data-auto-open-modal="settingsModal"></div>{% endif %}
 {% endblock %}

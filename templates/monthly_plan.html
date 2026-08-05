@@ -15,7 +15,7 @@
     <p>{{ plan.notes if plan and plan.notes else 'Página limpa para criar e acompanhar somente os cards deste mês.' }}</p>
   </div>
   <div class="month-workspace-metrics">
-    <div><span>DATAS PLANEJADAS</span><strong>{{ total_dates }}</strong></div>
+    <div><span>VÍDEOS PLANEJADOS</span><strong>{{ projection.count if projection else total_dates }}</strong></div>
     <div><span>CARDS CRIADOS</span><strong>{{ month_videos|length }}</strong></div>
   </div>
 </section>
@@ -87,12 +87,12 @@
   <aside class="planner-sidebar">
     <section class="side-panel schedule-panel">
       <div class="panel-title"><span>🗓️</span><div><small>PLANEJAMENTO DO MÊS</small><h3>Próximas publicações</h3></div></div>
-      <div class="frequency-highlight"><strong>{{ total_dates }} vídeos</strong><span>ritmo personalizado em {{ rules|length }} período(s)</span></div>
+      <div class="frequency-highlight"><strong>{{ projection.count if projection else total_dates }} vídeos</strong><span>ritmo personalizado em {{ rules|length }} período(s)</span></div>
       <div class="frequency-rule-badge custom">🧩 Regras semanais unificadas</div>
       {% if rules %}
       <div class="month-rule-summary-list">
         {% for rule in rules %}
-        <div><b>Período {{ loop.index }}</b><span>{{ rule.start_date|date_br }} → {{ rule.end_date|date_br }}</span></div>
+        <div><b>Período {{ loop.index }}</b><span>{{ rule.start_date|date_br }} → {{ rule.end_date|date_br }} · {{ rule.videos_per_day or 1 }} vídeo{{ 's' if (rule.videos_per_day or 1) != 1 else '' }}/dia</span></div>
         {% endfor %}
       </div>
       {% endif %}
@@ -102,7 +102,7 @@
         <div class="date-item {{ item.state }} {% if loop.first %}next{% endif %}">
           <span>{{ item.date.strftime('%d') }}</span>
           <div><strong>{{ item.date.strftime('%d/%m/%Y') }}</strong><small>{{ item.label }}</small></div>
-          {% if item.videos %}<em>{{ item.published_count }}/{{ item.videos|length }}</em>{% endif %}
+          <em>{{ item.planned_count }} vídeo{{ 's' if item.planned_count != 1 else '' }}</em>
         </div>
         {% else %}
         <div class="schedule-empty">O mês ainda não possui datas. Edite o planejamento nas configurações.</div>

@@ -1,34 +1,48 @@
 from __future__ import annotations
 
 import calendar
+import hashlib
+import hmac
 import json
 import mimetypes
 import os
+import secrets
 import shutil
 import sqlite3
+import time
 import uuid
 from contextlib import closing
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlparse
-from urllib.request import Request as URLRequest, urlopen
+from zoneinfo import ZoneInfo
 
 import uvicorn
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.sessions import SessionMiddleware
 
 BASE_DIR = Path(__file__).resolve().parent
+DATABASE_PATH = BASE_DIR / "plannerx.db"
+UPLOAD_DIR = BASE_DIR / "static" / "uploads"
+
 IS_VERCEL = bool(os.environ.get("VERCEL"))
-DATABASE_URL = os.environ.get("DATABASE_URL", "").strip()
-DATA_DIR = Path("/tmp/ds-plannerx") if IS_VERCEL and not DATABASE_URL else BASE_DIR
-DATABASE_PATH = Path(os.environ.get("SQLITE_PATH", str(DATA_DIR / "plannerx.db")))
-UPLOAD_DIR = Path("/tmp/ds-plannerx/uploads") if IS_VERCEL else BASE_DIR / "static" / "uploads"
-DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+if not IS_VERCEL:
+    UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+DATABASE_URL = (os.environ.get("DATABASE_URL") or os.environ.get("POSTGRES_URL") or "").strip()
+USE_POSTGRES = bool(DATABASE_URL)
+BLOB_READ_WRITE_TOKEN = os.environ.get("BLOB_READ_WRITE_TOKEN", "").strip()
+BLOB_ENABLED = bool(BLOB_READ_WRITE_TOKEN)
+CLOUD_UPLOAD_ENABLED = IS_VERCEL and BLOB_ENABLED
+TIMEZONE_NAME = os.environ.get("PLANNERX_TIMEZONE", "America/Sao_Paulo").strip() or "America/Sao_Paulo"
+try:
+    APP_TIMEZONE = ZoneInfo(TIMEZONE_NAME)
+except Exception:
+    TIMEZONE_NAME = "America/Sao_Paulo"
+    APP_TIMEZONE = ZoneInfo(TIMEZONE_NAME)
 
 ALLOWED_EXTENSIONS = {
     "mp4", "mov", "mkv", "avi", "webm", "m4v",
@@ -38,8 +52,13 @@ ALLOWED_EXTENSIONS = {
 }
 
 STATUS_LABELS = {
-    "todo": "Pra fazer",
     "production": "Em produção",
+    "completed": "Concluído",
+}
+
+TITLE_STATUS_LABELS = {
+    "ready": "Permitido para uso",
+    "progress": "Em andamento",
     "completed": "Concluído",
 }
 
@@ -48,87 +67,333 @@ FREQUENCY_MODES = {
     "days_off": "Dias completos sem postar",
 }
 
+PERIOD_MODES = {
+    "months": "Mês(es) completo(s)",
+    "days": "Quantidade exata de dias",
+    "month_end": "Até o fim do mês escolhido",
+}
+
+SCHEDULE_MODES = {
+    "standard": "Ritmo padrão",
+    "custom": "Planejamento personalizado por mês",
+}
+
+PRODUCTION_LOG_STATUS = {
+    "script_ready": "Roteiro pronto",
+    "video_completed": "Vídeo concluído",
+}
+
+LOGIN_USERNAME = os.environ.get("PLANNERX_USERNAME", "Admdsscale")
+LOGIN_PASSWORD = os.environ.get("PLANNERX_PASSWORD", "Acesso2626")
+SESSION_SECRET_PATH = BASE_DIR / ".plannerx_session_key"
+
+LOGIN_MOTIVATIONS = [
+    "Login feito. Agora só falta convencer a lista de tarefas de que você veio trabalhar.",
+    "Acesso liberado! O café entrou como gerente e a procrastinação perdeu o crachá.",
+    "Bem-vinda de volta. Hoje a meta não escapa nem se trocar de thumbnail.",
+    "Painel aberto: o algoritmo ainda não sabe, mas o dia dele acabou de ficar movimentado.",
+    "Entrou no PlannerX. Respira, escolhe um card e finge que foi tudo planejado desde ontem.",
+    "Acesso confirmado. Um roteiro por vez e, quando perceber, a meta já estará pedindo trégua.",
+    "Sistema online. A criatividade chegou; agora estamos aguardando apenas o primeiro clique.",
+    "Bem-vinda! Hoje vale produtividade, café e nenhuma reunião com a procrastinação.",
+]
+
+
+def load_session_secret() -> str:
+    env_secret = os.environ.get("SESSION_SECRET", "").strip()
+    if len(env_secret) >= 32:
+        return env_secret
+    if IS_VERCEL:
+        # A tela de configuração avisa sobre a variável ausente. O fallback
+        # evita falha de importação antes de o usuário concluir a configuração.
+        return "ds-plannerx-vercel-session-secret-configure-no-painel"
+    try:
+        if SESSION_SECRET_PATH.exists():
+            value = SESSION_SECRET_PATH.read_text(encoding="utf-8").strip()
+            if len(value) >= 32:
+                return value
+        value = secrets.token_urlsafe(48)
+        SESSION_SECRET_PATH.write_text(value, encoding="utf-8")
+        return value
+    except OSError:
+        return "ds-plannerx-local-session-v2-1-fallback-key-change-me"
+
+
+SESSION_SECRET = load_session_secret()
+
+
+def password_matches(value: str) -> bool:
+    return hmac.compare_digest(value, LOGIN_PASSWORD)
+
+
+CONFIG_ERRORS: list[str] = []
+if IS_VERCEL and not USE_POSTGRES:
+    CONFIG_ERRORS.append("Conecte um banco Postgres/Neon e crie a variável DATABASE_URL.")
+if IS_VERCEL and not BLOB_ENABLED:
+    CONFIG_ERRORS.append("Crie um Vercel Blob Store para gerar BLOB_READ_WRITE_TOKEN.")
+if IS_VERCEL and len(os.environ.get("SESSION_SECRET", "")) < 32:
+    CONFIG_ERRORS.append("Crie SESSION_SECRET com pelo menos 32 caracteres.")
+
+MONTH_NAMES_PT = {
+    1: "Janeiro", 2: "Fevereiro", 3: "Março", 4: "Abril",
+    5: "Maio", 6: "Junho", 7: "Julho", 8: "Agosto",
+    9: "Setembro", 10: "Outubro", 11: "Novembro", 12: "Dezembro",
+}
+
 app = FastAPI(title="DS - PLANNERX", docs_url=None, redoc_url=None)
+
+
+def configuration_error_page() -> str:
+    items = "".join(f"<li>{item}</li>" for item in CONFIG_ERRORS)
+    return f"""<!doctype html><html lang='pt-BR'><head><meta charset='utf-8'>
+    <meta name='viewport' content='width=device-width,initial-scale=1'>
+    <title>Configurar DS - PLANNERX</title><style>
+    body{{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at top,#32104f 0,#0b0711 45%,#050307 100%);color:#f5efff;font-family:Inter,Arial,sans-serif}}
+    main{{width:min(720px,calc(100% - 40px));padding:34px;border:1px solid #6f3b91;border-radius:24px;background:rgba(15,9,22,.94);box-shadow:0 25px 80px #0008}}
+    h1{{margin:0 0 12px;color:#d9b9ff}} p,li{{line-height:1.6;color:#d6c9e4}} code{{background:#241331;padding:3px 7px;border-radius:7px;color:#fff}}
+    .tag{{display:inline-block;color:#bc6cff;font-weight:800;letter-spacing:.12em;font-size:12px;margin-bottom:10px}}
+    </style></head><body><main><span class='tag'>CONFIGURAÇÃO DA VERCEL</span><h1>Faltam variáveis para iniciar o PlannerX</h1>
+    <p>Abra o projeto na Vercel, entre em <b>Settings → Environment Variables</b> e conclua:</p><ul>{items}</ul>
+    <p>Depois faça um novo <b>Redeploy</b>. O usuário e a senha também podem ser alterados com <code>PLANNERX_USERNAME</code> e <code>PLANNERX_PASSWORD</code>.</p></main></body></html>"""
+
+
+@app.middleware("http")
+async def authentication_middleware(request: Request, call_next):
+    path = request.url.path
+    if CONFIG_ERRORS and path != "/health" and not path.startswith("/static/"):
+        return HTMLResponse(configuration_error_page(), status_code=503)
+    public_path = path == "/login" or path.startswith("/static/") or path == "/favicon.ico" or path == "/health"
+    if not public_path and not request.session.get("authenticated"):
+        if path.startswith("/api/"):
+            return JSONResponse({"ok": False, "message": "Sessão encerrada. Faça login novamente."}, status_code=401)
+        return RedirectResponse(url="/login", status_code=303)
+    return await call_next(request)
+
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=SESSION_SECRET,
+    session_cookie="ds_plannerx_session",
+    same_site="lax",
+    https_only=IS_VERCEL,
+    max_age=60 * 60 * 12,
+)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=BASE_DIR / "templates")
 
 
-def _postgres_sql(sql: str) -> str:
-    """Converte placeholders simples do SQLite para o psycopg."""
-    return sql.replace("?", "%s")
+def asset_url(value: str | None) -> str:
+    if not value:
+        return ""
+    value = str(value)
+    if value.startswith(("https://", "http://")):
+        return value
+    return f"/uploads/{quote(value, safe='')}"
 
 
-class Database:
-    def __init__(self):
-        self.backend = "postgres" if DATABASE_URL else "sqlite"
-        if self.backend == "postgres":
-            try:
-                import psycopg
-                from psycopg.rows import dict_row
-            except ImportError as exc:  # pragma: no cover - depende do ambiente de deploy
-                raise RuntimeError(
-                    "DATABASE_URL foi configurada, mas o pacote psycopg não está instalado. "
-                    "Execute pip install -r requirements.txt."
-                ) from exc
-            self.connection = psycopg.connect(DATABASE_URL, row_factory=dict_row)
-        else:
-            self.connection = sqlite3.connect(DATABASE_PATH)
-            self.connection.row_factory = sqlite3.Row
-            self.connection.execute("PRAGMA foreign_keys = ON")
+def download_url(value: str | None) -> str:
+    """Força o navegador a baixar o arquivo sem reinterpretar o conteúdo.
 
-    def execute(self, sql: str, params: tuple | list = ()):
-        if self.backend == "postgres":
-            return self.connection.execute(_postgres_sql(sql), params)
-        return self.connection.execute(sql, params)
+    O Vercel Blob reconhece ``download=1`` e responde como anexo. Para os
+    uploads locais, a rota /uploads usa o mesmo parâmetro.
+    """
+    url = asset_url(value)
+    if not url:
+        return ""
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}download=1"
 
-    def executescript(self, sql: str) -> None:
-        if self.backend == "postgres":
-            for statement in (item.strip() for item in sql.split(";")):
-                if statement:
-                    self.connection.execute(statement)
-        else:
-            self.connection.executescript(sql)
+
+templates.env.filters["asset_url"] = asset_url
+templates.env.filters["download_url"] = download_url
+
+
+class PostgresConnectionAdapter:
+    def __init__(self, url: str):
+        import psycopg
+        from psycopg.rows import dict_row
+        self._connection = psycopg.connect(url, row_factory=dict_row)
+
+    @staticmethod
+    def _sql(sql: str) -> str:
+        return sql.replace("?", "%s")
+
+    def execute(self, sql: str, params: Any = ()):
+        return self._connection.execute(self._sql(sql), tuple(params or ()))
 
     def commit(self) -> None:
-        self.connection.commit()
+        self._connection.commit()
 
     def rollback(self) -> None:
-        self.connection.rollback()
+        self._connection.rollback()
 
     def close(self) -> None:
-        self.connection.close()
+        self._connection.close()
 
 
-def get_db() -> Database:
-    return Database()
+def get_db() -> Any:
+    if USE_POSTGRES:
+        return PostgresConnectionAdapter(DATABASE_URL)
+    db = sqlite3.connect(DATABASE_PATH)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA foreign_keys = ON")
+    return db
 
 
-def table_columns(db: Database, table_name: str) -> set[str]:
-    if db.backend == "postgres":
-        rows = db.execute(
-            "SELECT column_name AS name FROM information_schema.columns "
-            "WHERE table_schema = 'public' AND table_name = ?",
-            (table_name,),
-        ).fetchall()
-    else:
-        rows = db.execute(f"PRAGMA table_info({table_name})").fetchall()
-    return {row["name"] for row in rows}
+def init_postgres_db() -> None:
+    # A aplicação roda como função serverless na Vercel. Mais de uma instância
+    # pode iniciar ao mesmo tempo e tentar executar a migração. O advisory lock
+    # serializa essa etapa para impedir corridas de CREATE/ALTER TABLE.
+    migration_lock_key = 823_260_231
+    statements = [
+        """CREATE TABLE IF NOT EXISTS channels (
+            id BIGSERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            image_path TEXT,
+            title_goal INTEGER NOT NULL DEFAULT 12,
+            interval_days INTEGER NOT NULL DEFAULT 2,
+            frequency_mode TEXT NOT NULL DEFAULT 'interval',
+            start_date TEXT NOT NULL,
+            planning_month TEXT NOT NULL DEFAULT '',
+            calculation_days INTEGER NOT NULL DEFAULT 30,
+            period_mode TEXT NOT NULL DEFAULT 'months',
+            period_value INTEGER NOT NULL DEFAULT 1,
+            daily_script_goal INTEGER NOT NULL DEFAULT 1,
+            daily_video_goal INTEGER NOT NULL DEFAULT 1,
+            schedule_mode TEXT NOT NULL DEFAULT 'standard',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS videos (
+            id BIGSERIAL PRIMARY KEY,
+            channel_id BIGINT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'production' CHECK(status IN ('todo', 'production', 'completed')),
+            planned_date TEXT,
+            description TEXT NOT NULL DEFAULT '',
+            cover_image_path TEXT,
+            script_completed_at TEXT,
+            completed_at TEXT,
+            published_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS attachments (
+            id BIGSERIAL PRIMARY KEY,
+            video_id BIGINT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+            original_name TEXT NOT NULL,
+            stored_name TEXT NOT NULL,
+            file_type TEXT NOT NULL,
+            mime_type TEXT,
+            size_bytes BIGINT NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS text_fields (
+            id BIGSERIAL PRIMARY KEY,
+            video_id BIGINT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+            label TEXT NOT NULL,
+            content TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS channel_titles (
+            id BIGSERIAL PRIMARY KEY,
+            channel_id BIGINT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+            position INTEGER NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'ready',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(channel_id, position)
+        )""",
+        """CREATE TABLE IF NOT EXISTS monthly_plans (
+            id BIGSERIAL PRIMARY KEY,
+            channel_id BIGINT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+            year_month TEXT NOT NULL,
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(channel_id, year_month)
+        )""",
+        """CREATE TABLE IF NOT EXISTS schedule_rules (
+            id BIGSERIAL PRIMARY KEY,
+            channel_id BIGINT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+            year_month TEXT NOT NULL,
+            start_date TEXT NOT NULL,
+            end_date TEXT NOT NULL,
+            frequency_mode TEXT NOT NULL DEFAULT 'interval',
+            interval_days INTEGER NOT NULL DEFAULT 1,
+            videos_per_day INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS production_logs (
+            id BIGSERIAL PRIMARY KEY,
+            channel_id BIGINT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+            history_month TEXT NOT NULL,
+            video_title TEXT NOT NULL,
+            work_date TEXT NOT NULL,
+            operator_name TEXT NOT NULL,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )""",
+        "CREATE INDEX IF NOT EXISTS idx_videos_channel ON videos(channel_id)",
+        "CREATE INDEX IF NOT EXISTS idx_attachments_video ON attachments(video_id)",
+        "CREATE INDEX IF NOT EXISTS idx_text_fields_video ON text_fields(video_id)",
+        "CREATE INDEX IF NOT EXISTS idx_monthly_plans_channel ON monthly_plans(channel_id)",
+        "CREATE INDEX IF NOT EXISTS idx_schedule_rules_channel_month ON schedule_rules(channel_id, year_month)",
+        "CREATE INDEX IF NOT EXISTS idx_production_logs_channel_date ON production_logs(channel_id, work_date)",
+        "ALTER TABLE videos ADD COLUMN IF NOT EXISTS cover_image_path TEXT",
+        "ALTER TABLE videos ADD COLUMN IF NOT EXISTS script_completed_at TEXT",
+        "ALTER TABLE videos ADD COLUMN IF NOT EXISTS completed_at TEXT",
+        "ALTER TABLE videos ADD COLUMN IF NOT EXISTS published_at TEXT",
+        "ALTER TABLE channels ADD COLUMN IF NOT EXISTS frequency_mode TEXT NOT NULL DEFAULT 'interval'",
+        "ALTER TABLE channels ADD COLUMN IF NOT EXISTS planning_month TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE channels ADD COLUMN IF NOT EXISTS calculation_days INTEGER NOT NULL DEFAULT 30",
+        "ALTER TABLE channels ADD COLUMN IF NOT EXISTS period_mode TEXT NOT NULL DEFAULT 'months'",
+        "ALTER TABLE channels ADD COLUMN IF NOT EXISTS period_value INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE channels ADD COLUMN IF NOT EXISTS daily_script_goal INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE channels ADD COLUMN IF NOT EXISTS daily_video_goal INTEGER NOT NULL DEFAULT 1",
+        "ALTER TABLE channels ADD COLUMN IF NOT EXISTS schedule_mode TEXT NOT NULL DEFAULT 'standard'",
+        "ALTER TABLE channel_titles ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'ready'",
+        "ALTER TABLE schedule_rules ADD COLUMN IF NOT EXISTS videos_per_day INTEGER NOT NULL DEFAULT 1",
+    ]
+    last_error: Exception | None = None
+    for attempt in range(1, 4):
+        with closing(get_db()) as db:
+            try:
+                # Lock transacional: outras instâncias aguardam e, quando esta
+                # finalizar, apenas confirmam que a estrutura já existe.
+                db.execute("SELECT pg_advisory_xact_lock(?)", (migration_lock_key,))
+                for statement in statements:
+                    db.execute(statement)
+                db.execute("UPDATE videos SET completed_at = updated_at WHERE status = 'completed' AND completed_at IS NULL")
+                db.execute("UPDATE videos SET status = 'production' WHERE status = 'todo'")
+                db.execute("UPDATE channels SET daily_script_goal = 1 WHERE daily_script_goal IS NULL OR daily_script_goal < 1")
+                db.execute("UPDATE channels SET daily_video_goal = 1 WHERE daily_video_goal IS NULL OR daily_video_goal < 1")
+                db.execute("UPDATE channels SET schedule_mode = 'standard' WHERE schedule_mode IS NULL OR schedule_mode NOT IN ('standard', 'custom')")
+                db.execute("UPDATE channels SET frequency_mode = 'interval' WHERE frequency_mode IS NULL OR frequency_mode NOT IN ('interval', 'days_off')")
+                db.execute("UPDATE channel_titles SET status = 'ready' WHERE status IS NULL OR status NOT IN ('ready', 'progress', 'completed')")
+                db.execute("UPDATE schedule_rules SET videos_per_day = 1 WHERE videos_per_day IS NULL OR videos_per_day < 1")
+                db.commit()
+                return
+            except Exception as exc:
+                last_error = exc
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+        if attempt < 3:
+            time.sleep(0.8 * attempt)
+    if last_error is not None:
+        raise last_error
 
-
-def insert_and_get_id(db: Database, sql: str, params: tuple | list) -> int:
-    if db.backend == "postgres":
-        row = db.execute(f"{sql.rstrip()} RETURNING id", params).fetchone()
-        return int(row["id"])
-    cursor = db.execute(sql, params)
-    return int(cursor.lastrowid)
-
-
-def init_db() -> None:
-    id_column = "BIGSERIAL PRIMARY KEY" if DATABASE_URL else "INTEGER PRIMARY KEY AUTOINCREMENT"
-    ref_column = "BIGINT" if DATABASE_URL else "INTEGER"
-    schema = f"""
+def init_sqlite_db() -> None:
+    schema = """
     CREATE TABLE IF NOT EXISTS channels (
-        id {id_column},
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
         description TEXT NOT NULL DEFAULT '',
         image_path TEXT,
@@ -136,26 +401,36 @@ def init_db() -> None:
         interval_days INTEGER NOT NULL DEFAULT 2,
         frequency_mode TEXT NOT NULL DEFAULT 'interval',
         start_date TEXT NOT NULL,
+        planning_month TEXT NOT NULL DEFAULT '',
+        calculation_days INTEGER NOT NULL DEFAULT 30,
+        period_mode TEXT NOT NULL DEFAULT 'months',
+        period_value INTEGER NOT NULL DEFAULT 1,
+        daily_script_goal INTEGER NOT NULL DEFAULT 1,
+        daily_video_goal INTEGER NOT NULL DEFAULT 1,
+        schedule_mode TEXT NOT NULL DEFAULT 'standard',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS videos (
-        id {id_column},
-        channel_id {ref_column} NOT NULL,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id INTEGER NOT NULL,
         title TEXT NOT NULL,
-        status TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('todo', 'production', 'completed')),
+        status TEXT NOT NULL DEFAULT 'production' CHECK(status IN ('todo', 'production', 'completed')),
         planned_date TEXT,
         description TEXT NOT NULL DEFAULT '',
         cover_image_path TEXT,
+        script_completed_at TEXT,
+        completed_at TEXT,
+        published_at TEXT,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS attachments (
-        id {id_column},
-        video_id {ref_column} NOT NULL,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        video_id INTEGER NOT NULL,
         original_name TEXT NOT NULL,
         stored_name TEXT NOT NULL,
         file_type TEXT NOT NULL,
@@ -166,8 +441,8 @@ def init_db() -> None:
     );
 
     CREATE TABLE IF NOT EXISTS text_fields (
-        id {id_column},
-        video_id {ref_column} NOT NULL,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        video_id INTEGER NOT NULL,
         label TEXT NOT NULL,
         content TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL,
@@ -176,25 +451,50 @@ def init_db() -> None:
     );
 
     CREATE TABLE IF NOT EXISTS channel_titles (
-        id {id_column},
-        channel_id {ref_column} NOT NULL,
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id INTEGER NOT NULL,
         position INTEGER NOT NULL,
         title TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'ready',
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE,
         UNIQUE(channel_id, position)
     );
 
-    CREATE TABLE IF NOT EXISTS posting_periods (
-        id {id_column},
-        channel_id {ref_column} NOT NULL,
-        name TEXT NOT NULL DEFAULT 'Período de postagem',
+    CREATE TABLE IF NOT EXISTS monthly_plans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id INTEGER NOT NULL,
+        year_month TEXT NOT NULL,
+        notes TEXT NOT NULL DEFAULT '',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE,
+        UNIQUE(channel_id, year_month)
+    );
+
+    CREATE TABLE IF NOT EXISTS schedule_rules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id INTEGER NOT NULL,
+        year_month TEXT NOT NULL,
         start_date TEXT NOT NULL,
         end_date TEXT NOT NULL,
-        interval_days INTEGER NOT NULL DEFAULT 2,
         frequency_mode TEXT NOT NULL DEFAULT 'interval',
+        interval_days INTEGER NOT NULL DEFAULT 1,
         videos_per_day INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS production_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id INTEGER NOT NULL,
+        history_month TEXT NOT NULL,
+        video_title TEXT NOT NULL,
+        work_date TEXT NOT NULL,
+        operator_name TEXT NOT NULL,
+        status TEXT NOT NULL,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         FOREIGN KEY(channel_id) REFERENCES channels(id) ON DELETE CASCADE
@@ -202,76 +502,121 @@ def init_db() -> None:
     """
     with closing(get_db()) as db:
         db.executescript(schema)
-
-        video_columns = table_columns(db, "videos")
+        # Migração automática para versões anteriores: adiciona capa própria aos cards de vídeo.
+        video_columns = {row["name"] for row in db.execute("PRAGMA table_info(videos)").fetchall()}
         if "cover_image_path" not in video_columns:
             db.execute("ALTER TABLE videos ADD COLUMN cover_image_path TEXT")
+        if "script_completed_at" not in video_columns:
+            db.execute("ALTER TABLE videos ADD COLUMN script_completed_at TEXT")
+        if "completed_at" not in video_columns:
+            db.execute("ALTER TABLE videos ADD COLUMN completed_at TEXT")
+            # Preserva uma data aproximada para cards que já estavam concluídos.
+            db.execute("UPDATE videos SET completed_at = updated_at WHERE status = 'completed' AND completed_at IS NULL")
+        if "published_at" not in video_columns:
+            db.execute("ALTER TABLE videos ADD COLUMN published_at TEXT")
 
-        channel_columns = table_columns(db, "channels")
+        # v2.0: o modo visual "Pra fazer" foi removido.
+        db.execute("UPDATE videos SET status = 'production' WHERE status = 'todo'")
+
+        channel_columns = {row["name"] for row in db.execute("PRAGMA table_info(channels)").fetchall()}
         if "frequency_mode" not in channel_columns:
             db.execute("ALTER TABLE channels ADD COLUMN frequency_mode TEXT NOT NULL DEFAULT 'interval'")
+        if "planning_month" not in channel_columns:
+            db.execute("ALTER TABLE channels ADD COLUMN planning_month TEXT NOT NULL DEFAULT ''")
+        if "calculation_days" not in channel_columns:
+            db.execute("ALTER TABLE channels ADD COLUMN calculation_days INTEGER NOT NULL DEFAULT 30")
+        if "daily_script_goal" not in channel_columns:
+            db.execute("ALTER TABLE channels ADD COLUMN daily_script_goal INTEGER NOT NULL DEFAULT 1")
+        if "daily_video_goal" not in channel_columns:
+            db.execute("ALTER TABLE channels ADD COLUMN daily_video_goal INTEGER NOT NULL DEFAULT 1")
+        if "schedule_mode" not in channel_columns:
+            db.execute("ALTER TABLE channels ADD COLUMN schedule_mode TEXT NOT NULL DEFAULT 'standard'")
+        db.execute("UPDATE channels SET daily_script_goal = 1 WHERE daily_script_goal IS NULL OR daily_script_goal < 1")
+        db.execute("UPDATE channels SET daily_video_goal = 1 WHERE daily_video_goal IS NULL OR daily_video_goal < 1")
+        had_period_mode = "period_mode" in channel_columns
+        had_period_value = "period_value" in channel_columns
+        if not had_period_mode:
+            db.execute("ALTER TABLE channels ADD COLUMN period_mode TEXT NOT NULL DEFAULT 'months'")
+        if not had_period_value:
+            db.execute("ALTER TABLE channels ADD COLUMN period_value INTEGER NOT NULL DEFAULT 1")
         db.execute(
             "UPDATE channels SET frequency_mode = 'interval' "
             "WHERE frequency_mode IS NULL OR frequency_mode NOT IN ('interval', 'days_off')"
         )
 
-        period_columns = table_columns(db, "posting_periods")
-        if "name" not in period_columns:
-            db.execute("ALTER TABLE posting_periods ADD COLUMN name TEXT NOT NULL DEFAULT 'Período de postagem'")
-        if "start_date" not in period_columns:
-            db.execute("ALTER TABLE posting_periods ADD COLUMN start_date TEXT NOT NULL DEFAULT '2026-01-01'")
-        if "end_date" not in period_columns:
-            db.execute("ALTER TABLE posting_periods ADD COLUMN end_date TEXT NOT NULL DEFAULT '2026-01-31'")
-        if "interval_days" not in period_columns:
-            db.execute("ALTER TABLE posting_periods ADD COLUMN interval_days INTEGER NOT NULL DEFAULT 2")
-        if "frequency_mode" not in period_columns:
-            db.execute("ALTER TABLE posting_periods ADD COLUMN frequency_mode TEXT NOT NULL DEFAULT 'interval'")
-        if "videos_per_day" not in period_columns:
-            db.execute("ALTER TABLE posting_periods ADD COLUMN videos_per_day INTEGER NOT NULL DEFAULT 1")
+        # Migração v1.8: etiquetas independentes de status no Banco de Títulos.
+        # Elas servem somente para consulta visual e não alteram metas, progresso
+        # da produção, contadores de vídeos ou o preenchimento do banco.
+        title_columns = {row["name"] for row in db.execute("PRAGMA table_info(channel_titles)").fetchall()}
+        if "status" not in title_columns:
+            db.execute("ALTER TABLE channel_titles ADD COLUMN status TEXT NOT NULL DEFAULT 'ready'")
         db.execute(
-            "UPDATE posting_periods SET frequency_mode = 'interval' "
-            "WHERE frequency_mode IS NULL OR frequency_mode NOT IN ('interval', 'days_off')"
-        )
-        db.execute(
-            "UPDATE posting_periods SET videos_per_day = 1 "
-            "WHERE videos_per_day IS NULL OR videos_per_day < 1"
+            "UPDATE channel_titles SET status = 'ready' "
+            "WHERE status IS NULL OR status NOT IN ('ready', 'progress', 'completed')"
         )
 
-        # Migra canais antigos: cada canal recebe um primeiro período equivalente
-        # à configuração de frequência que já existia.
-        channels = db.execute("SELECT * FROM channels ORDER BY id").fetchall()
-        timestamp = now_iso()
-        for channel in channels:
-            period_count = db.execute(
-                "SELECT COUNT(*) AS total FROM posting_periods WHERE channel_id = ?",
-                (channel["id"],),
-            ).fetchone()["total"]
-            if int(period_count or 0) > 0:
-                continue
-            start = parse_iso_date(channel["start_date"])
-            end = end_of_next_month(start)
-            month_name = month_name_pt(start.month)
-            insert_and_get_id(
-                db,
-                """INSERT INTO posting_periods
-                (channel_id, name, start_date, end_date, interval_days, frequency_mode, videos_per_day, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        # Vídeos por dia em cada período personalizado. Bancos antigos recebem 1,
+        # preservando exatamente o comportamento anterior até o usuário editar.
+        schedule_rule_columns = {row["name"] for row in db.execute("PRAGMA table_info(schedule_rules)").fetchall()}
+        if "videos_per_day" not in schedule_rule_columns:
+            db.execute("ALTER TABLE schedule_rules ADD COLUMN videos_per_day INTEGER NOT NULL DEFAULT 1")
+        db.execute("UPDATE schedule_rules SET videos_per_day = 1 WHERE videos_per_day IS NULL OR videos_per_day < 1")
+
+        # Migração para o novo período explícito. A versão anterior misturava
+        # "mês final" com "quantidade de dias", o que fazia 1 mês virar 30 dias.
+        rows = db.execute(
+            "SELECT id, start_date, planning_month, calculation_days, period_mode, period_value FROM channels"
+        ).fetchall()
+        for row in rows:
+            start = parse_iso_date(row["start_date"])
+            planning_month = str(row["planning_month"] or "").strip()
+            current_days = max(1, int(row["calculation_days"] or 30))
+            mode = str(row["period_mode"] or "").strip()
+            value = max(1, int(row["period_value"] or 1))
+
+            if not had_period_mode or not had_period_value or mode not in PERIOD_MODES:
+                # Ciclo antigo de 30 dias começando no mesmo mês: converte para
+                # 1 mês de calendário, preservando a intenção do usuário.
+                if current_days == 30 and (not planning_month or planning_month == start.strftime("%Y-%m")):
+                    mode, value = "months", 1
+                elif planning_month and current_days == days_until_month_end(start, planning_month):
+                    mode, value = "month_end", 1
+                else:
+                    mode, value = "days", current_days
+
+            projection = calculate_period(start, mode, value, planning_month)
+            db.execute(
+                """UPDATE channels SET planning_month = ?, calculation_days = ?,
+                period_mode = ?, period_value = ? WHERE id = ?""",
                 (
-                    channel["id"],
-                    f"Planejamento de {month_name}",
-                    start.isoformat(),
-                    end.isoformat(),
-                    normalize_frequency_value(channel["interval_days"], channel["frequency_mode"]),
-                    normalize_frequency_mode(channel["frequency_mode"]),
-                    1,
-                    timestamp,
-                    timestamp,
+                    projection["planning_month"], projection["period_days"],
+                    projection["period_mode"], projection["period_value"], row["id"],
                 ),
             )
         db.commit()
 
+
+
+
+def init_db() -> None:
+    if CONFIG_ERRORS and IS_VERCEL:
+        return
+    if USE_POSTGRES:
+        init_postgres_db()
+    else:
+        init_sqlite_db()
+
+
+def local_now() -> datetime:
+    return datetime.now(APP_TIMEZONE)
+
+
+def today_local() -> date:
+    return local_now().date()
+
+
 def now_iso() -> str:
-    return datetime.now().replace(microsecond=0).isoformat(sep=" ")
+    return local_now().replace(tzinfo=None, microsecond=0).isoformat(sep=" ")
 
 
 def parse_iso_date(value: str | None, fallback: date | None = None) -> date:
@@ -280,7 +625,117 @@ def parse_iso_date(value: str | None, fallback: date | None = None) -> date:
             return datetime.strptime(value, "%Y-%m-%d").date()
         except ValueError:
             pass
-    return fallback or date.today()
+    return fallback or today_local()
+
+
+def parse_year_month(value: str | None, fallback: date | None = None) -> tuple[int, int]:
+    if value:
+        try:
+            parsed = datetime.strptime(value, "%Y-%m")
+            return parsed.year, parsed.month
+        except ValueError:
+            pass
+    base = fallback or today_local()
+    return base.year, base.month
+
+
+def month_end_date(value: str | None, fallback: date | None = None) -> date:
+    year, month = parse_year_month(value, fallback)
+    return date(year, month, calendar.monthrange(year, month)[1])
+
+
+def normalize_planning_month(value: str | None, start: date) -> str:
+    year, month = parse_year_month(value, start)
+    end = date(year, month, calendar.monthrange(year, month)[1])
+    if end < start:
+        return start.strftime("%Y-%m")
+    return f"{year:04d}-{month:02d}"
+
+
+def days_until_month_end(start: date, planning_month: str | None) -> int:
+    normalized = normalize_planning_month(planning_month, start)
+    return max(1, (month_end_date(normalized, start) - start).days + 1)
+
+
+def normalize_calculation_days(value: int | str | None, default: int) -> int:
+    try:
+        parsed = int(value or 0)
+    except (TypeError, ValueError):
+        parsed = 0
+    return min(max(parsed or default, 1), 7300)
+
+
+def normalize_period_mode(value: str | None) -> str:
+    return value if value in PERIOD_MODES else "months"
+
+
+def normalize_period_value(value: int | str | None, mode: str) -> int:
+    try:
+        parsed = int(value or 0)
+    except (TypeError, ValueError):
+        parsed = 0
+    if mode == "months":
+        return min(max(parsed or 1, 1), 120)
+    if mode == "days":
+        return min(max(parsed or 30, 1), 7300)
+    return 1
+
+
+def add_calendar_months(start: date, months: int) -> date:
+    """Soma meses de calendário preservando o dia quando ele existe.
+
+    Ex.: 27/07/2026 + 1 mês = 27/08/2026. Para datas no fim do mês,
+    o dia é limitado ao último dia do mês de destino.
+    """
+    months = max(1, int(months or 1))
+    month_index = (start.month - 1) + months
+    year = start.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(start.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def calculate_period(
+    start: date,
+    period_mode: str | None,
+    period_value: int | str | None,
+    planning_month: str | None,
+) -> dict[str, Any]:
+    mode = normalize_period_mode(period_mode)
+    value = normalize_period_value(period_value, mode)
+
+    if mode == "months":
+        end = add_calendar_months(start, value)
+        normalized_month = end.strftime("%Y-%m")
+        summary = f"{value} mês{'es' if value != 1 else ''} completo{'s' if value != 1 else ''}"
+    elif mode == "days":
+        end = start + timedelta(days=value - 1)
+        normalized_month = end.strftime("%Y-%m")
+        summary = f"{value} dias exatos"
+    else:
+        normalized_month = normalize_planning_month(planning_month, start)
+        end = month_end_date(normalized_month, start)
+        if end < start:
+            normalized_month = start.strftime("%Y-%m")
+            end = month_end_date(normalized_month, start)
+        summary = f"até o fim de {planning_month_text(normalized_month, start).lower()}"
+
+    period_days = (end - start).days + 1
+    return {
+        "period_mode": mode,
+        "period_value": value,
+        "period_start": start,
+        "period_end": end,
+        "period_days": max(1, period_days),
+        "planning_month": normalized_month,
+        "planning_month_text": planning_month_text(normalized_month, start),
+        "period_summary": summary,
+    }
+
+
+def planning_month_text(value: str | None, fallback: date) -> str:
+    year, month = parse_year_month(value, fallback)
+    return f"{MONTH_NAMES_PT[month]} de {year}"
 
 
 def safe_filename(filename: str) -> str:
@@ -305,76 +760,94 @@ def detect_file_type(filename: str) -> str:
     return "text"
 
 
-def _blob_upload(stored: str, data: bytes, mime: str | None) -> str:
-    token = os.environ.get("BLOB_READ_WRITE_TOKEN", "").strip()
-    if not token:
-        raise ValueError(
-            "O armazenamento online não está configurado. Conecte um Vercel Blob ao projeto "
-            "ou use a versão local."
-        )
-    request = URLRequest(
-        f"https://blob.vercel-storage.com/ds-plannerx/{stored}",
-        data=data,
-        method="PUT",
-        headers={
-            "access": "public",
-            "authorization": f"Bearer {token}",
-            "x-api-version": "7",
-            "x-content-type": mime or "application/octet-stream",
-            "x-add-random-suffix": "0",
-            "content-type": "application/octet-stream",
-        },
-    )
-    try:
-        with urlopen(request, timeout=60) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (HTTPError, URLError, TimeoutError, json.JSONDecodeError) as exc:
-        raise ValueError(f"Não foi possível salvar o arquivo no Vercel Blob: {exc}") from exc
-    url = payload.get("url") or payload.get("downloadUrl")
-    if not url:
-        raise ValueError("O Vercel Blob não devolveu a URL do arquivo.")
-    return str(url)
-
-
 def save_upload(upload: UploadFile) -> tuple[str, str, str, str | None, int]:
+    if IS_VERCEL:
+        raise ValueError(
+            "O upload em nuvem não foi iniciado. Atualize a página e tente novamente com o JavaScript ativado."
+        )
     original = safe_filename(upload.filename or "arquivo")
     if not allowed_file(original):
         raise ValueError(f"Formato não permitido: {upload.filename}")
     ext = original.rsplit(".", 1)[1].lower()
     stored = f"{uuid.uuid4().hex}.{ext}"
-    mime = upload.content_type or mimetypes.guess_type(original)[0]
-    upload.file.seek(0)
-
-    if IS_VERCEL:
-        data = upload.file.read()
-        remote_url = _blob_upload(stored, data, mime)
-        return original, remote_url, detect_file_type(original), mime, len(data)
-
     destination = UPLOAD_DIR / stored
+    upload.file.seek(0)
     with destination.open("wb") as target:
         shutil.copyfileobj(upload.file, target, length=1024 * 1024)
+    mime = upload.content_type or mimetypes.guess_type(original)[0]
     return original, stored, detect_file_type(original), mime, destination.stat().st_size
+
+
+def is_vercel_blob_url(value: str | None) -> bool:
+    if not value:
+        return False
+    try:
+        parsed = urlparse(str(value))
+    except ValueError:
+        return False
+    return parsed.scheme == "https" and parsed.hostname is not None and parsed.hostname.endswith("blob.vercel-storage.com")
+
+
+def validate_cloud_upload(
+    stored_url: str, original_name: str, mime_type: str | None, size_bytes: int | str | None,
+) -> tuple[str, str, str, str | None, int]:
+    original = safe_filename(original_name or "arquivo")
+    if not allowed_file(original):
+        raise ValueError(f"Formato não permitido: {original_name}")
+    if not is_vercel_blob_url(stored_url):
+        raise ValueError("O arquivo enviado não pertence ao armazenamento autorizado do PlannerX.")
+    try:
+        parsed_size = max(0, int(size_bytes or 0))
+    except (TypeError, ValueError):
+        parsed_size = 0
+    mime = (mime_type or mimetypes.guess_type(original)[0] or "application/octet-stream").strip()
+    return original, stored_url.strip(), detect_file_type(original), mime, parsed_size
 
 
 def remove_upload(filename: str | None) -> None:
     if not filename:
         return
-    # A exclusão remota não impede o funcionamento do card. O registro deixa de
-    # apontar para o arquivo; a limpeza definitiva pode ser feita no painel Blob.
-    if str(filename).startswith(("http://", "https://")):
+    if is_vercel_blob_url(filename):
+        if not (BLOB_ENABLED and IS_VERCEL):
+            return
+        try:
+            from urllib.request import Request as UrlRequest, urlopen
+
+            deployment_host = (
+                os.environ.get("VERCEL_PROJECT_PRODUCTION_URL")
+                or os.environ.get("VERCEL_URL")
+                or ""
+            ).strip().removeprefix("https://").removeprefix("http://").rstrip("/")
+            if not deployment_host:
+                return
+            payload = json.dumps({
+                "auth": make_upload_auth_token(120),
+                "url": filename,
+            }).encode("utf-8")
+            request = UrlRequest(
+                f"https://{deployment_host}/api/blob-delete",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlopen(request, timeout=8):
+                pass
+        except Exception:
+            # O registro é removido mesmo se o provedor estiver temporariamente
+            # indisponível; a exclusão física pode ser refeita pelo painel Blob.
+            pass
         return
     path = UPLOAD_DIR / filename
     if path.exists() and path.is_file():
         path.unlink(missing_ok=True)
 
 
-def media_url(value: str | None) -> str:
-    if not value:
-        return ""
-    text = str(value)
-    if text.startswith(("http://", "https://")):
-        return text
-    return f"/uploads/{quote(text)}"
+def make_upload_auth_token(valid_for_seconds: int = 600) -> str:
+    expires_at = int(time.time()) + max(60, valid_for_seconds)
+    message = str(expires_at).encode("utf-8")
+    signature = hmac.new(SESSION_SECRET.encode("utf-8"), message, hashlib.sha256).hexdigest()
+    return f"{expires_at}.{signature}"
+
 
 def normalize_frequency_mode(value: str | None) -> str:
     return value if value in FREQUENCY_MODES else "interval"
@@ -413,74 +886,91 @@ def frequency_text(value: int | str | None, mode: str | None, compact: bool = Fa
     return text
 
 
-def first_schedule_date(start: date, step_days: int) -> date:
-    """Mantém a cadência escolhida e encontra a primeira data ainda válida."""
-    step_days = max(1, step_days)
-    current = start
-    today = date.today()
-    if current < today:
-        elapsed = (today - current).days
-        jumps = (elapsed + step_days - 1) // step_days
-        current += timedelta(days=jumps * step_days)
-    return current
-
-
-def end_of_next_month(reference: date) -> date:
-    """Retorna o último dia do mês seguinte ao da data de referência."""
-    if reference.month == 12:
-        year, month = reference.year + 1, 1
-    else:
-        year, month = reference.year, reference.month + 1
-    return date(year, month, calendar.monthrange(year, month)[1])
-
-
-def month_name_pt(month: int) -> str:
-    names = (
-        "Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho",
-        "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro",
-    )
-    return names[max(1, min(12, int(month))) - 1]
-
-
-def schedule_dates_until(start: date, step_days: int, period_end: date) -> list[date]:
-    """Gera todas as datas da agenda, sem limite visual artificial."""
-    step_days = max(1, step_days)
+def schedule_dates(start: date, step_days: int, period_days: int) -> list[date]:
+    step_days = max(1, int(step_days or 1))
+    period_days = max(1, int(period_days or 1))
+    end = start + timedelta(days=period_days - 1)
     dates: list[date] = []
     current = start
-    while current <= period_end:
+    while current <= end:
         dates.append(current)
         current += timedelta(days=step_days)
     return dates
 
 
-def month_projection(start: date, interval_days: int, frequency_mode: str = "interval") -> dict[str, Any]:
-    """Calcula a agenda do início selecionado até o fim do mês seguinte.
+def month_projection(
+    start: date,
+    interval_days: int,
+    frequency_mode: str = "interval",
+    period_mode: str = "months",
+    period_value: int | str | None = 1,
+    planning_month: str | None = None,
+    calculation_days: int | str | None = None,
+) -> dict[str, Any]:
+    """Calcula as postagens usando um período sem ambiguidades.
 
-    ``interval`` mede a distância entre as datas: dia 27, a cada 2 dias,
-    resulta em 27, 29, 31. ``days_off`` mede quantos dias completos ficam sem
-    postagem: dia 27, com 2 dias sem postar, resulta em 27, 30, 02.
+    - ``months``: soma meses de calendário. 27/07 + 1 mês = 27/08.
+    - ``days``: usa exatamente a quantidade de dias, incluindo a data inicial.
+    - ``month_end``: segue até o último dia do mês escolhido.
 
-    Exemplo pedido: de 27/07/2026 até 31/08/2026, com 2 dias completos sem
-    postar, são 12 publicações: 27/07, 30/07, 02/08 ... 29/08.
+    A frequência também permanece explícita:
+    - intervalo 2: 27, 29, 31...;
+    - 2 dias completos sem postar: 27, 30, 02....
     """
     mode = normalize_frequency_mode(frequency_mode)
     value = normalize_frequency_value(interval_days, mode)
     step_days = effective_interval_days(value, mode)
-    first_date = first_schedule_date(start, step_days)
-    period_end = end_of_next_month(first_date)
-    dates = schedule_dates_until(first_date, step_days, period_end)
+
+    # Compatibilidade defensiva com bancos antigos que ainda não têm os novos campos.
+    normalized_period_mode = normalize_period_mode(period_mode)
+    normalized_period_value = normalize_period_value(period_value, normalized_period_mode)
+    period = calculate_period(start, normalized_period_mode, normalized_period_value, planning_month)
+    if normalized_period_mode == "days" and calculation_days not in (None, ""):
+        fallback_days = normalize_calculation_days(calculation_days, period["period_days"])
+        if normalized_period_value <= 0:
+            period = calculate_period(start, "days", fallback_days, planning_month)
+
+    dates = schedule_dates(start, step_days, period["period_days"])
+    if mode == "days_off":
+        if value == 0:
+            formula = f"{period['period_days']} dias · postagem diária"
+        else:
+            formula = (
+                f"{period['period_days']} dias · ciclo de {step_days} dias "
+                f"(1 postagem + {value} dia{'s' if value != 1 else ''} sem postar)"
+            )
+    else:
+        formula = (
+            f"{period['period_days']} dias · intervalo de {step_days} "
+            f"dia{'s' if step_days != 1 else ''} entre as postagens"
+        )
+
     return {
         "count": len(dates),
         "dates": dates,
-        "period_days": (period_end - first_date).days + 1,
-        "period_start": first_date,
-        "period_end": period_end,
+        **period,
         "frequency_mode": mode,
         "frequency_value": value,
         "step_days": step_days,
         "frequency_text": frequency_text(value, mode),
         "frequency_text_compact": frequency_text(value, mode, compact=True),
+        "period_label": f"{start.strftime('%d/%m/%Y')} até {period['period_end'].strftime('%d/%m/%Y')}",
+        "formula_text": formula,
     }
+
+
+
+def normalize_schedule_mode(value: str | None) -> str:
+    return value if value in SCHEDULE_MODES else "standard"
+
+
+def valid_year_month(value: str | None, fallback: date | None = None) -> str:
+    base = fallback or today_local()
+    try:
+        parsed = datetime.strptime(str(value or ""), "%Y-%m")
+        return parsed.strftime("%Y-%m")
+    except ValueError:
+        return base.strftime("%Y-%m")
 
 
 def normalize_videos_per_day(value: int | str | None) -> int:
@@ -488,132 +978,529 @@ def normalize_videos_per_day(value: int | str | None) -> int:
         parsed = int(value or 1)
     except (TypeError, ValueError):
         parsed = 1
-    return max(1, min(parsed, 50))
+    return min(max(parsed, 1), 999)
 
 
-def period_dates(period: Any) -> list[date]:
-    start = parse_iso_date(period["start_date"])
-    end = parse_iso_date(period["end_date"], start)
-    if end < start:
-        return []
-    step = effective_interval_days(period["interval_days"], period["frequency_mode"])
-    return schedule_dates_until(start, step, end)
+def custom_schedule_slots(db: Any, channel_id: int, year_month: str | None = None) -> list[dict[str, Any]]:
+    """Une períodos por data e mantém a maior quantidade de vídeos configurada.
 
-
-def build_channel_plan(periods: list[Any]) -> dict[str, Any]:
-    """Une os períodos sem duplicar datas e aplica a maior meta diária.
-
-    Exemplo: dois períodos geram 04/08 com 1 vídeo por dia. A data aparece uma
-    única vez com 1 vídeo. Se um deles tiver 2 vídeos por dia, 04/08 terá 2.
+    Uma data nunca é duplicada. Quando duas regras alcançam o mesmo dia, não se
+    somam automaticamente: prevalece o maior ``videos_per_day`` entre elas.
     """
-    by_date: dict[date, dict[str, Any]] = {}
-    normalized_periods: list[dict[str, Any]] = []
-    for period in periods:
-        videos_per_day = normalize_videos_per_day(period["videos_per_day"])
-        dates = period_dates(period)
-        normalized = {
-            "id": period["id"],
-            "name": period["name"],
-            "start_date": parse_iso_date(period["start_date"]),
-            "end_date": parse_iso_date(period["end_date"]),
-            "interval_days": normalize_frequency_value(period["interval_days"], period["frequency_mode"]),
-            "frequency_mode": normalize_frequency_mode(period["frequency_mode"]),
-            "videos_per_day": videos_per_day,
-            "frequency_text": frequency_text(period["interval_days"], period["frequency_mode"]),
-            "dates_count": len(dates),
-        }
-        normalized_periods.append(normalized)
-        for item_date in dates:
-            entry = by_date.setdefault(item_date, {"videos": 0, "period_ids": [], "period_names": []})
-            # Regra solicitada: períodos sobrepostos não somam automaticamente.
-            # Vale a maior quantidade configurada para aquela data.
-            entry["videos"] = max(int(entry["videos"]), videos_per_day)
-            entry["period_ids"].append(period["id"])
-            entry["period_names"].append(period["name"])
+    sql = "SELECT * FROM schedule_rules WHERE channel_id = ?"
+    params: list[Any] = [channel_id]
+    if year_month:
+        sql += " AND year_month = ?"
+        params.append(valid_year_month(year_month))
+    sql += " ORDER BY start_date, id"
+    rules = db.execute(sql, params).fetchall()
+    videos_by_date: dict[date, int] = {}
+    for rule in rules:
+        start = parse_iso_date(rule["start_date"])
+        end = parse_iso_date(rule["end_date"], start)
+        if end < start:
+            start, end = end, start
+        mode = normalize_frequency_mode(rule["frequency_mode"])
+        value = normalize_frequency_value(rule["interval_days"], mode)
+        step = effective_interval_days(value, mode)
+        videos_per_day = normalize_videos_per_day(rule["videos_per_day"] if "videos_per_day" in rule.keys() else 1)
+        current = start
+        while current <= end:
+            videos_by_date[current] = max(videos_by_date.get(current, 0), videos_per_day)
+            current += timedelta(days=max(1, step))
+    return [
+        {"date": item_date, "videos_per_day": videos_by_date[item_date]}
+        for item_date in sorted(videos_by_date)
+    ]
 
-    items: list[dict[str, Any]] = []
-    today_value = date.today()
-    for item_date in sorted(by_date):
-        raw = by_date[item_date]
-        if item_date < today_value:
-            status = "published"
-            label = "Publicado"
-        elif item_date == today_value:
-            status = "today"
-            label = "Postagem de hoje"
-        else:
-            status = "future"
-            label = "Postagem prevista"
-        items.append({
-            "date": item_date,
-            "videos": int(raw["videos"]),
-            "period_count": len(set(raw["period_ids"])),
-            "period_names": raw["period_names"],
-            "status": status,
-            "label": label,
-        })
 
-    period_start = min((p["start_date"] for p in normalized_periods), default=None)
-    period_end = max((p["end_date"] for p in normalized_periods), default=None)
-    duration = ((period_end - period_start).days + 1) if period_start and period_end else 0
-    if period_start and period_end and period_start.month == period_end.month and period_start.year == period_end.year:
-        label = f"{month_name_pt(period_start.month)} de {period_start.year}"
-    elif period_start and period_end:
-        label = f"{date_br(period_start)} a {date_br(period_end)}"
+def custom_schedule_dates(db: Any, channel_id: int, year_month: str | None = None) -> list[date]:
+    return [slot["date"] for slot in custom_schedule_slots(db, channel_id, year_month)]
+
+
+def custom_schedule_total(db: Any, channel_id: int, year_month: str | None = None) -> int:
+    return sum(int(slot["videos_per_day"]) for slot in custom_schedule_slots(db, channel_id, year_month))
+
+
+def channel_projection(db: Any, channel: Any) -> dict[str, Any]:
+    schedule_mode = normalize_schedule_mode(channel["schedule_mode"] if "schedule_mode" in channel.keys() else "standard")
+    if schedule_mode != "custom":
+        return month_projection(
+            parse_iso_date(channel["start_date"]),
+            channel["interval_days"], channel["frequency_mode"], channel["period_mode"],
+            channel["period_value"], channel["planning_month"], channel["calculation_days"],
+        ) | {"schedule_mode": "standard"}
+
+    slots = custom_schedule_slots(db, int(channel["id"]))
+    dates = [slot["date"] for slot in slots]
+    total_videos = sum(int(slot["videos_per_day"]) for slot in slots)
+    videos_by_date = {slot["date"].isoformat(): int(slot["videos_per_day"]) for slot in slots}
+    if dates:
+        start, end = dates[0], dates[-1]
+        period_days = (end - start).days + 1
+        period_label = f"{start.strftime('%d/%m/%Y')} até {end.strftime('%d/%m/%Y')}"
+        planning_month = end.strftime("%Y-%m")
     else:
-        label = "sem período configurado"
-    overlap_dates = sum(1 for item in items if item["period_count"] > 1)
+        start = parse_iso_date(channel["start_date"])
+        end = start
+        period_days = 1
+        period_label = "Crie regras nos meses do calendário"
+        planning_month = start.strftime("%Y-%m")
     return {
-        "periods": normalized_periods,
-        "items": items,
-        "total_videos": sum(item["videos"] for item in items),
-        "unique_dates": len(items),
-        "period_count": len(normalized_periods),
-        "period_start": period_start,
-        "period_end": period_end,
-        "duration_days": duration,
-        "label": label,
-        "overlap_dates": overlap_dates,
+        "count": total_videos,
+        "date_count": len(dates),
+        "dates": dates,
+        "schedule_slots": slots,
+        "videos_by_date": videos_by_date,
+        "period_start": start,
+        "period_end": end,
+        "period_days": period_days,
+        "planning_month": planning_month,
+        "planning_month_text": planning_month_text(planning_month, start),
+        "period_summary": "planejamento personalizado",
+        "period_label": period_label,
+        "formula_text": f"União das regras mensais, sem repetir datas ({len(dates)} datas únicas)",
+        "frequency_mode": "custom",
+        "frequency_value": 0,
+        "step_days": 0,
+        "frequency_text": "personalizado por mês",
+        "frequency_text_compact": "ritmo personalizado",
+        "schedule_mode": "custom",
     }
 
 
-def channel_stats(db: Database, channel_id: int, title_goal: int) -> dict[str, int | float]:
+def schedule_date_items(db: Any, channel_id: int, schedule: list[Any]) -> list[dict[str, Any]]:
     rows = db.execute(
-        "SELECT status, COUNT(*) AS total FROM videos WHERE channel_id = ? GROUP BY status",
+        "SELECT id, title, planned_date, published_at FROM videos WHERE channel_id = ? AND planned_date IS NOT NULL",
         (channel_id,),
     ).fetchall()
+    by_date: dict[str, list[Any]] = {}
+    for row in rows:
+        by_date.setdefault(str(row["planned_date"]), []).append(row)
+    today = today_local()
+    items: list[dict[str, Any]] = []
+    for entry in schedule:
+        if isinstance(entry, dict):
+            item_date = entry["date"]
+            planned_count = normalize_videos_per_day(entry.get("videos_per_day", 1))
+        else:
+            item_date = entry
+            planned_count = 1
+        key = item_date.isoformat()
+        linked = by_date.get(key, [])
+        published_count = sum(1 for video in linked if video["published_at"])
+        if planned_count > 0 and published_count >= planned_count:
+            state, label = "published", "Publicado"
+        elif item_date == today:
+            state, label = "today", "Postagem de hoje"
+        elif item_date < today:
+            state, label = "overdue", "Não publicado"
+        else:
+            state, label = "future", "Postagem prevista"
+        items.append({
+            "date": item_date,
+            "state": state,
+            "label": label,
+            "videos": linked,
+            "published_count": published_count,
+            "planned_count": planned_count,
+        })
+    return items
+
+
+def month_calendar(db: Any, channel_id: int, year: int) -> list[dict[str, Any]]:
+    """Retorna somente os meses salvos, usando SQL simples em SQLite e Postgres.
+
+    A versão anterior usava subconsultas correlacionadas e concatenação dentro de
+    LIKE. Embora válidas em muitos cenários, elas causaram erro em algumas bases
+    Neon já existentes. Consultas separadas são mais previsíveis e não alteram
+    nenhuma tabela ou dado cadastrado.
+    """
+    plans = db.execute(
+        "SELECT year_month, notes FROM monthly_plans WHERE channel_id = ? AND year_month LIKE ? ORDER BY year_month",
+        (channel_id, f"{year:04d}-%"),
+    ).fetchall()
+    result: list[dict[str, Any]] = []
+    for plan in plans:
+        year_month = str(plan["year_month"] or "").strip()
+        if not year_month:
+            continue
+        _, month = parse_year_month(year_month)
+        video_row = db.execute(
+            "SELECT COUNT(*) AS total FROM videos WHERE channel_id = ? AND planned_date LIKE ?",
+            (channel_id, f"{year_month}-%"),
+        ).fetchone()
+        rule_row = db.execute(
+            "SELECT COUNT(*) AS total FROM schedule_rules WHERE channel_id = ? AND year_month = ?",
+            (channel_id, year_month),
+        ).fetchone()
+        slots = custom_schedule_slots(db, channel_id, year_month)
+        dates = [slot["date"] for slot in slots]
+        planned_video_count = sum(int(slot["videos_per_day"]) for slot in slots)
+        result.append({
+            "year_month": year_month,
+            "short": MONTH_NAMES_PT[month][:3].upper(),
+            "name": MONTH_NAMES_PT[month],
+            "month": month,
+            "has_plan": True,
+            "video_count": int(video_row["total"] or 0) if video_row else 0,
+            "rule_count": int(rule_row["total"] or 0) if rule_row else 0,
+            "date_count": len(dates),
+            "planned_video_count": planned_video_count,
+            "notes": str(plan["notes"] or ""),
+            "is_current": year == today_local().year and month == today_local().month,
+        })
+    return result
+
+
+def custom_plans_payload(db: Any, channel_id: int) -> list[dict[str, Any]]:
+    """Serializa planejamentos e regras para edição dentro das configurações."""
+    plans = db.execute(
+        "SELECT * FROM monthly_plans WHERE channel_id = ? ORDER BY year_month",
+        (channel_id,),
+    ).fetchall()
+    payload: list[dict[str, Any]] = []
+    for plan in plans:
+        year_month = str(plan["year_month"])
+        year, month = parse_year_month(year_month)
+        rules = db.execute(
+            "SELECT * FROM schedule_rules WHERE channel_id = ? AND year_month = ? ORDER BY start_date, id",
+            (channel_id, year_month),
+        ).fetchall()
+        slots = custom_schedule_slots(db, channel_id, year_month)
+        dates = [slot["date"] for slot in slots]
+        planned_video_count = sum(int(slot["videos_per_day"]) for slot in slots)
+        payload.append({
+            "year_month": year_month,
+            "month_label": f"{MONTH_NAMES_PT[month]} de {year}",
+            "notes": str(plan["notes"] or ""),
+            "date_count": len(dates),
+            "planned_video_count": planned_video_count,
+            "dates": [item.isoformat() for item in dates],
+            "rules": [
+                {
+                    "id": int(rule["id"]),
+                    "start_date": str(rule["start_date"]),
+                    "end_date": str(rule["end_date"]),
+                    "frequency_mode": normalize_frequency_mode(rule["frequency_mode"]),
+                    "interval_days": int(rule["interval_days"] or 1),
+                    "videos_per_day": normalize_videos_per_day(rule["videos_per_day"] if "videos_per_day" in rule.keys() else 1),
+                }
+                for rule in rules
+            ],
+        })
+    return payload
+
+
+CELEBRATION_MESSAGES = {
+    "script": [
+        "Meta de roteiros alcançada! A página em branco pediu demissão. 👑",
+        "Roteiros do dia garantidos. O café pode solicitar participação nos lucros.",
+        "Meta de roteiros batida! Hoje a criatividade trabalhou sem reclamar do horário.",
+    ],
+    "video": [
+        "Meta de vídeos alcançada! O botão publicar já está chamando você de chefe.",
+        "Vídeos do dia concluídos. O algoritmo foi avisado para se comportar.",
+        "Meta de vídeos batida! A timeline ficou tão organizada que parece montagem.",
+    ],
+    "both": [
+        "Dupla meta alcançada! Roteiros e vídeos concluídos antes da procrastinação abrir o expediente.",
+        "Meta dupla no bolso! Hoje até a lista de tarefas ficou sem resposta.",
+        "Roteiros e vídeos: missão cumprida. Pode erguer o troféu sem modéstia.",
+    ],
+    "general": [
+        "Meta geral alcançada! O PlannerX oficialmente ficou pequeno para esse ritmo.",
+        "100% concluído! A barra de progresso agora está exigindo tapete vermelho.",
+        "Meta geral vencida. O algoritmo recebeu o comunicado e a procrastinação perdeu o crachá.",
+    ],
+}
+
+
+def celebration_payload(kind: str | None) -> dict[str, str] | None:
+    if kind not in CELEBRATION_MESSAGES:
+        return None
+    messages = CELEBRATION_MESSAGES[kind]
+    index = (today_local().toordinal() + int(time.time())) % len(messages)
+    return {"kind": kind, "title": "META ALCANÇADA", "message": messages[index], "emoji": "🏆"}
+
+
+def achieved_kind(before: dict[str, Any], after: dict[str, Any], general_before: bool = False, general_after: bool = False) -> str | None:
+    if not general_before and general_after:
+        return "general"
+    script_new = not bool(before.get("scripts_complete")) and bool(after.get("scripts_complete"))
+    video_new = not bool(before.get("videos_complete")) and bool(after.get("videos_complete"))
+    if script_new and video_new:
+        return "both"
+    if script_new:
+        return "script"
+    if video_new:
+        return "video"
+    return None
+
+
+MONTH_TITLE_POSITION_BASE = 10_000_000
+MONTH_TITLE_POSITION_STEP = 1_000
+MONTH_TITLE_MAX_SLOTS = 200
+
+
+def month_title_position_base(year_month: str) -> int:
+    year, month = parse_year_month(valid_year_month(year_month))
+    return MONTH_TITLE_POSITION_BASE + (year - 2000) * 100_000 + month * MONTH_TITLE_POSITION_STEP
+
+
+def title_bank_records(db: Any, channel_id: int, year_month: str | None = None) -> list[Any]:
+    if year_month:
+        base = month_title_position_base(year_month)
+        return db.execute(
+            """SELECT position, title, status FROM channel_titles
+            WHERE channel_id = ? AND position > ? AND position <= ? ORDER BY position""",
+            (channel_id, base, base + MONTH_TITLE_MAX_SLOTS),
+        ).fetchall()
+    return db.execute(
+        """SELECT position, title, status FROM channel_titles
+        WHERE channel_id = ? AND position < ? ORDER BY position""",
+        (channel_id, MONTH_TITLE_POSITION_BASE),
+    ).fetchall()
+
+
+def title_bank_slots(db: Any, channel_id: int, goal: int, year_month: str | None = None) -> list[dict[str, Any]]:
+    rows = title_bank_records(db, channel_id, year_month)
+    base = month_title_position_base(year_month) if year_month else 0
+    by_position: dict[int, dict[str, str]] = {}
+    for item in rows:
+        local_position = int(item["position"]) - base
+        if local_position < 1 or local_position > MONTH_TITLE_MAX_SLOTS:
+            continue
+        by_position[local_position] = {
+            "title": str(item["title"] or ""),
+            "status": item["status"] if item["status"] in TITLE_STATUS_LABELS else "ready",
+        }
+    highest = max(by_position, default=0)
+    slot_count = min(max(int(goal or 0), highest), MONTH_TITLE_MAX_SLOTS)
+    return [
+        {
+            "position": position,
+            "title": by_position.get(position, {}).get("title", ""),
+            "status": by_position.get(position, {}).get("status", "ready"),
+        }
+        for position in range(1, slot_count + 1)
+    ]
+
+
+def channel_stats(
+    db: Any,
+    channel_id: int,
+    title_goal: int,
+    year_month: str | None = None,
+) -> dict[str, int | float]:
+    sql = "SELECT status, COUNT(*) AS total FROM videos WHERE channel_id = ?"
+    params: list[Any] = [channel_id]
+    if year_month:
+        normalized_month = valid_year_month(year_month)
+        sql += " AND planned_date LIKE ?"
+        params.append(f"{normalized_month}-%")
+    sql += " GROUP BY status"
+    rows = db.execute(sql, params).fetchall()
     counts = {"todo": 0, "production": 0, "completed": 0}
     for row in rows:
-        counts[row["status"]] = row["total"]
+        counts[row["status"]] = int(row["total"] or 0)
     total = sum(counts.values())
-    goal = max(1, int(title_goal or 1))
-    title_row = db.execute(
-        "SELECT COUNT(*) AS total FROM channel_titles WHERE channel_id = ? AND TRIM(title) <> ''",
-        (channel_id,),
-    ).fetchone()
-    title_count = int(title_row["total"] if title_row else 0)
-    remaining_titles = max(goal - title_count, 0)
-    progress = min(counts["completed"] / goal * 100, 100)
-    title_progress = min(title_count / goal * 100, 100)
+    goal = max(0, int(title_goal or 0)) if year_month else max(1, int(title_goal or 1))
+    title_count = sum(1 for row in title_bank_records(db, channel_id, year_month) if str(row["title"] or "").strip())
+
+    remaining_titles = max(goal - counts["completed"], 0)
+    bank_remaining_titles = max(goal - title_count, 0)
+    denominator = max(goal, 1)
+    progress = min(counts["completed"] / denominator * 100, 100) if goal else 0
+    title_progress = min(title_count / denominator * 100, 100) if goal else 0
     return {
         **counts,
         "total": total,
         "goal": goal,
         "title_count": title_count,
         "remaining_titles": remaining_titles,
+        "bank_remaining_titles": bank_remaining_titles,
         "progress": round(progress, 1),
         "title_progress": round(title_progress, 1),
     }
 
 
-def get_channel_or_404(db: Database, channel_id: int):
+def custom_month_projection(db: Any, channel_id: int, year_month: str) -> dict[str, Any]:
+    normalized_month = valid_year_month(year_month)
+    year, month = parse_year_month(normalized_month)
+    month_start = date(year, month, 1)
+    month_end = date(year, month, calendar.monthrange(year, month)[1])
+    slots = custom_schedule_slots(db, channel_id, normalized_month)
+    dates = [slot["date"] for slot in slots]
+    total_videos = sum(int(slot["videos_per_day"]) for slot in slots)
+    videos_by_date = {slot["date"].isoformat(): int(slot["videos_per_day"]) for slot in slots}
+    rules = db.execute(
+        "SELECT * FROM schedule_rules WHERE channel_id = ? AND year_month = ? ORDER BY start_date, id",
+        (channel_id, normalized_month),
+    ).fetchall()
+    if dates:
+        period_start, period_end = dates[0], dates[-1]
+        period_days = (period_end - period_start).days + 1
+        period_label = f"{period_start.strftime('%d/%m/%Y')} até {period_end.strftime('%d/%m/%Y')}"
+    else:
+        period_start, period_end = month_start, month_end
+        period_days = (month_end - month_start).days + 1
+        period_label = f"{month_start.strftime('%d/%m/%Y')} até {month_end.strftime('%d/%m/%Y')}"
+    return {
+        "count": total_videos,
+        "date_count": len(dates),
+        "dates": dates,
+        "schedule_slots": slots,
+        "videos_by_date": videos_by_date,
+        "period_start": period_start,
+        "period_end": period_end,
+        "period_days": period_days,
+        "planning_month": normalized_month,
+        "planning_month_text": f"{MONTH_NAMES_PT[month]} de {year}",
+        "period_summary": f"planejamento de {MONTH_NAMES_PT[month]}",
+        "period_label": period_label,
+        "formula_text": f"União de {len(rules)} período(s), sem repetir datas ({len(dates)} datas únicas)",
+        "frequency_mode": "custom",
+        "frequency_value": 0,
+        "step_days": 0,
+        "frequency_text": "personalizado por mês",
+        "frequency_text_compact": "ritmo personalizado",
+        "schedule_mode": "custom",
+        "rules": rules,
+    }
+
+
+def daily_goal_stats(db: Any, channel: Any, target_date: date | None = None) -> dict[str, int | float | str]:
+    """Soma ações dos cards e lançamentos manuais do Fluxo de Produção."""
+    selected = target_date or today_local()
+    selected_iso = selected.isoformat()
+    card_row = db.execute(
+        """SELECT
+            SUM(CASE WHEN DATE(script_completed_at) = ? THEN 1 ELSE 0 END) AS scripts_done,
+            SUM(CASE WHEN DATE(completed_at) = ? THEN 1 ELSE 0 END) AS videos_done
+        FROM videos WHERE channel_id = ?""",
+        (selected_iso, selected_iso, channel["id"]),
+    ).fetchone()
+    log_row = db.execute(
+        """SELECT
+            SUM(CASE WHEN status = 'script_ready' THEN 1 ELSE 0 END) AS scripts_done,
+            SUM(CASE WHEN status = 'video_completed' THEN 1 ELSE 0 END) AS videos_done
+        FROM production_logs WHERE channel_id = ? AND work_date = ?""",
+        (channel["id"], selected_iso),
+    ).fetchone()
+    script_goal = max(1, int(channel["daily_script_goal"] or 1))
+    video_goal = max(1, int(channel["daily_video_goal"] or 1))
+    scripts_done = int(card_row["scripts_done"] or 0) + int(log_row["scripts_done"] or 0)
+    videos_done = int(card_row["videos_done"] or 0) + int(log_row["videos_done"] or 0)
+    return {
+        "date": selected_iso,
+        "date_br": selected.strftime("%d/%m/%Y"),
+        "script_goal": script_goal,
+        "video_goal": video_goal,
+        "scripts_done": scripts_done,
+        "videos_done": videos_done,
+        "script_progress": min(round(scripts_done / script_goal * 100, 1), 100),
+        "video_progress": min(round(videos_done / video_goal * 100, 1), 100),
+        "scripts_complete": scripts_done >= script_goal,
+        "videos_complete": videos_done >= video_goal,
+    }
+
+
+def channel_motivation(
+    channel_id: int,
+    stats: dict[str, int | float],
+    daily_stats: dict[str, int | float | str],
+    login_message: str | None = None,
+) -> dict[str, str]:
+    """Frase dinâmica por login, andamento diário e metas alcançadas."""
+    completed = int(stats.get("completed", 0) or 0)
+    goal = max(1, int(stats.get("goal", 1) or 1))
+    remaining = max(goal - completed, 0)
+    progress = float(stats.get("progress", 0) or 0)
+    scripts_done = int(daily_stats.get("scripts_done", 0) or 0)
+    videos_done = int(daily_stats.get("videos_done", 0) or 0)
+    script_goal = max(1, int(daily_stats.get("script_goal", 1) or 1))
+    video_goal = max(1, int(daily_stats.get("video_goal", 1) or 1))
+    scripts_complete = bool(daily_stats.get("scripts_complete"))
+    videos_complete = bool(daily_stats.get("videos_complete"))
+
+    if login_message:
+        return {"emoji": "🔐", "label": "MENSAGEM DO LOGIN", "text": login_message}
+    if completed >= goal:
+        label, emoji = "META GERAL BATIDA", "🏆"
+        messages = [
+            f"{completed} de {goal}! A meta geral foi concluída e a barra de progresso agora está se achando celebridade.",
+            "Meta geral vencida. O algoritmo recebeu o recado e a procrastinação pediu transferência.",
+            "100% concluído! Pode comemorar: hoje até a lista de tarefas ficou sem argumento.",
+        ]
+    elif scripts_complete and videos_complete:
+        label, emoji = "DUPLA META DO DIA", "🥇"
+        messages = [
+            f"Roteiros {scripts_done}/{script_goal} e vídeos {videos_done}/{video_goal}. Duas metas no bolso e ainda sobrou elegância.",
+            "Meta de roteiros e vídeos concluída hoje. A produtividade veio trabalhar de roupa social.",
+            "Dobradinha completa! Roteiros e vídeos bateram a meta antes que a procrastinação inventasse uma desculpa nova.",
+        ]
+    elif scripts_complete:
+        label, emoji = "META DE ROTEIROS BATIDA", "📜"
+        messages = [
+            f"{scripts_done}/{script_goal} roteiros hoje. A página em branco perdeu oficialmente a discussão.",
+            "Meta diária de roteiros concluída! As ideias fizeram fila e, pela primeira vez, ninguém furou.",
+            "Roteiros do dia garantidos. Agora o cursor pode descansar sem culpa por alguns segundos.",
+        ]
+    elif videos_complete:
+        label, emoji = "META DE VÍDEOS BATIDA", "🎬"
+        messages = [
+            f"{videos_done}/{video_goal} vídeos concluídos hoje. O botão Publicar já sabe quem manda.",
+            "Meta diária de vídeos batida! A timeline ficou tão organizada que até assustou.",
+            "Vídeos do dia concluídos. O algoritmo pode preparar a recepção.",
+        ]
+    elif scripts_done or videos_done:
+        label, emoji = "RITMO DO DIA", "⚡"
+        messages = [
+            f"Hoje já temos {scripts_done}/{script_goal} roteiros e {videos_done}/{video_goal} vídeos. A máquina ligou; não encoste no fio.",
+            "As metas diárias começaram a andar. Continue antes que elas percebam que poderiam correr.",
+            "Produção em movimento: um clique por vez e a desculpa do ‘depois eu faço’ vai ficando desempregada.",
+        ]
+    elif progress < 25:
+        label, emoji = "EMPURRÃOZINHO DO DIA", "☕"
+        messages = [
+            "A meta está no aquecimento — o café já fez a parte dele, agora falta o próximo vídeo.",
+            "O painel está calmo demais. Abra um card antes que ele comece a tirar férias.",
+            "Um vídeo concluído vale mais que quarenta e sete abas abertas com boas intenções.",
+        ]
+    elif progress < 50:
+        label, emoji = "RITMO PEGANDO", "🚀"
+        messages = [
+            f"{completed} concluídos. A procrastinação acaba de perder mais um round.",
+            f"Faltam {remaining}. A engrenagem pegou e já está fazendo pose para a foto.",
+            "A meta começou a ficar com medo de você. Continue assim.",
+        ]
+    elif progress < 75:
+        label, emoji = "PASSOU DA METADE", "😎"
+        messages = [
+            "Passou da metade! Desistir agora dá mais trabalho do que terminar.",
+            f"{completed} concluídos e só {remaining} pela frente. A barra já está se achando importante.",
+            "Metade vencida. O botão Publicar já começou a respeitar seu nome.",
+        ]
+    else:
+        label, emoji = "RETA FINAL", "🔥"
+        messages = [
+            f"Só faltam {remaining}. A meta tentou se esconder, mas a barra de progresso entregou tudo.",
+            "Reta final! Organizar pastas não conta como vídeo, então vamos ao que interessa.",
+            f"{completed} concluídos. Agora é só não deixar a última etapa inventar personalidade.",
+        ]
+    index = (today_local().toordinal() + channel_id + completed + scripts_done + videos_done) % len(messages)
+    return {"emoji": emoji, "label": label, "text": messages[index]}
+
+
+def get_channel_or_404(db: sqlite3.Connection, channel_id: int) -> sqlite3.Row:
     channel = db.execute("SELECT * FROM channels WHERE id = ?", (channel_id,)).fetchone()
     if channel is None:
         raise HTTPException(status_code=404, detail="Canal não encontrado")
     return channel
 
 
-def get_video_or_404(db: Database, video_id: int):
+def get_video_or_404(db: sqlite3.Connection, video_id: int) -> sqlite3.Row:
     video = db.execute(
         """SELECT videos.*, channels.name AS channel_name
         FROM videos JOIN channels ON channels.id = videos.channel_id
@@ -623,13 +1510,6 @@ def get_video_or_404(db: Database, video_id: int):
     if video is None:
         raise HTTPException(status_code=404, detail="Vídeo não encontrado")
     return video
-
-
-def get_period_or_404(db: Database, period_id: int):
-    period = db.execute("SELECT * FROM posting_periods WHERE id = ?", (period_id,)).fetchone()
-    if period is None:
-        raise HTTPException(status_code=404, detail="Período não encontrado")
-    return period
 
 
 def redirect_to(path: str, message: str | None = None, kind: str = "success") -> RedirectResponse:
@@ -648,10 +1528,17 @@ def template_context(request: Request, **kwargs: Any) -> dict[str, Any]:
         "request": request,
         "status_labels": STATUS_LABELS,
         "frequency_modes": FREQUENCY_MODES,
-        "today": date.today().isoformat(),
+        "period_modes": PERIOD_MODES,
+        "schedule_modes": SCHEDULE_MODES,
+        "today": today_local().isoformat(),
+        "default_period_mode": "months",
+        "default_period_value": 1,
+        "default_planning_month": add_calendar_months(today_local(), 1).strftime("%Y-%m"),
         "messages": messages,
         "active_endpoint": active_endpoint,
-        "storage_warning": IS_VERCEL and not DATABASE_URL,
+        "current_user": request.session.get("username", ""),
+        "cloud_upload_enabled": CLOUD_UPLOAD_ENABLED,
+        "celebration": celebration_payload(request.query_params.get("celebrate")),
         **kwargs,
     }
 
@@ -677,7 +1564,54 @@ def filesize(value: int | None) -> str:
 
 templates.env.filters["date_br"] = date_br
 templates.env.filters["filesize"] = filesize
-templates.env.globals["media_url"] = media_url
+
+
+
+
+@app.get("/health", name="health")
+def health():
+    return {
+        "ok": not CONFIG_ERRORS,
+        "database": "postgres" if USE_POSTGRES else "sqlite",
+        "storage": "vercel-blob" if BLOB_ENABLED else "local",
+        "version": "2.5-unified-month-workspace",
+    }
+
+
+@app.get("/api/blob-upload-auth", name="blob_upload_auth")
+def blob_upload_auth():
+    if not BLOB_ENABLED:
+        return JSONResponse({"ok": False, "message": "Vercel Blob ainda não foi configurado."}, status_code=503)
+    return {"ok": True, "token": make_upload_auth_token(), "expires_in": 600}
+
+
+@app.get("/login", response_class=HTMLResponse, name="login")
+def login_page(request: Request):
+    if request.session.get("authenticated"):
+        return RedirectResponse(url="/", status_code=303)
+    return templates.TemplateResponse(request, "login.html", {"request": request, "error": None})
+
+
+@app.post("/login", response_class=HTMLResponse, name="login_submit")
+def login_submit(request: Request, username: str = Form(...), password: str = Form(...)):
+    valid_user = hmac.compare_digest(username.strip(), LOGIN_USERNAME)
+    if not (valid_user and password_matches(password)):
+        return templates.TemplateResponse(
+            request, "login.html",
+            {"request": request, "error": "Usuário ou senha incorretos.", "username": username.strip()},
+            status_code=401,
+        )
+    request.session.clear()
+    request.session["authenticated"] = True
+    request.session["username"] = LOGIN_USERNAME
+    request.session["login_at"] = now_iso()
+    return redirect_to("/", "Acesso liberado. Bem-vinda ao DS - PLANNERX.")
+
+
+@app.post("/logout", name="logout")
+def logout(request: Request):
+    request.session.clear()
+    return RedirectResponse(url="/login", status_code=303)
 
 
 @app.get("/", response_class=HTMLResponse, name="dashboard")
@@ -685,16 +1619,12 @@ def dashboard(request: Request):
     with closing(get_db()) as db:
         channels = db.execute("SELECT * FROM channels ORDER BY updated_at DESC").fetchall()
         cards = []
-        aggregate = {"channels": len(channels), "todo": 0, "production": 0, "completed": 0, "total": 0}
+        aggregate = {"channels": len(channels), "production": 0, "completed": 0, "total": 0}
         for channel in channels:
             stats = channel_stats(db, channel["id"], channel["title_goal"])
-            periods = db.execute(
-                "SELECT * FROM posting_periods WHERE channel_id = ? ORDER BY start_date, id",
-                (channel["id"],),
-            ).fetchall()
-            plan = build_channel_plan(periods)
-            cards.append({"channel": channel, "stats": stats, "plan": plan})
-            for key in ("todo", "production", "completed", "total"):
+            projection = channel_projection(db, channel)
+            cards.append({"channel": channel, "stats": stats, "projection": projection})
+            for key in ("production", "completed", "total"):
                 aggregate[key] += int(stats[key])
     return templates.TemplateResponse(request, "dashboard.html", template_context(request, cards=cards, aggregate=aggregate))
 
@@ -703,14 +1633,28 @@ def dashboard(request: Request):
 def create_channel(
     name: str = Form(...), description: str = Form(""), title_goal: int = Form(12),
     interval_days: int = Form(2), frequency_mode: str = Form("interval"),
-    start_date: str = Form(...), videos_per_day: int = Form(1),
-    image: UploadFile | None = File(None),
+    schedule_mode: str = Form("standard"), start_date: str = Form(...), period_mode: str = Form("months"),
+    period_value: str = Form("1"), planning_month: str = Form(""),
+    calculation_days: str = Form(""), image: UploadFile | None = File(None),
+    image_cloud_url: str = Form(""), image_cloud_name: str = Form(""),
+    image_cloud_mime: str = Form(""), image_cloud_size: str = Form(""),
 ):
     name = name.strip()
     if not name:
         return redirect_to("/", "Informe o nome do canal.", "error")
     image_path = None
-    if image and image.filename:
+    if image_cloud_url:
+        try:
+            _, image_path, file_type, _, _ = validate_cloud_upload(
+                image_cloud_url, image_cloud_name, image_cloud_mime, image_cloud_size,
+            )
+            if file_type != "image":
+                remove_upload(image_path)
+                raise ValueError("A capa do canal precisa ser uma imagem.")
+        except ValueError as exc:
+            remove_upload(image_cloud_url)
+            return redirect_to("/", str(exc), "error")
+    elif image and image.filename:
         try:
             _, image_path, file_type, _, _ = save_upload(image)
             if file_type != "image":
@@ -721,44 +1665,88 @@ def create_channel(
     timestamp = now_iso()
     mode = normalize_frequency_mode(frequency_mode)
     frequency_value = normalize_frequency_value(interval_days, mode)
-    initial_daily = normalize_videos_per_day(videos_per_day)
-    initial_start = parse_iso_date(start_date)
-    initial_end = end_of_next_month(initial_start)
+    parsed_start = parse_iso_date(start_date)
+    normalized_period_mode = normalize_period_mode(period_mode)
+    normalized_period_value = normalize_period_value(period_value, normalized_period_mode)
+    period = calculate_period(parsed_start, normalized_period_mode, normalized_period_value, planning_month)
+    insert_sql = """INSERT INTO channels (
+        name, description, image_path, title_goal, interval_days, frequency_mode,
+        start_date, planning_month, calculation_days, period_mode, period_value, schedule_mode,
+        created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+    if USE_POSTGRES:
+        insert_sql += " RETURNING id"
     with closing(get_db()) as db:
-        channel_id = insert_and_get_id(
-            db,
-            """INSERT INTO channels (name, description, image_path, title_goal, interval_days, frequency_mode, start_date, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (name, description.strip(), image_path, max(1, title_goal), frequency_value, mode, initial_start.isoformat(), timestamp, timestamp),
-        )
-        insert_and_get_id(
-            db,
-            """INSERT INTO posting_periods
-            (channel_id, name, start_date, end_date, interval_days, frequency_mode, videos_per_day, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        cursor = db.execute(
+            insert_sql,
             (
-                channel_id,
-                f"Planejamento de {month_name_pt(initial_start.month)}",
-                initial_start.isoformat(),
-                initial_end.isoformat(),
-                frequency_value,
-                mode,
-                initial_daily,
-                timestamp,
-                timestamp,
+                name, description.strip(), image_path, max(1, title_goal), frequency_value, mode,
+                parsed_start.isoformat(), period["planning_month"], period["period_days"],
+                period["period_mode"], period["period_value"], normalize_schedule_mode(schedule_mode), timestamp, timestamp,
             ),
         )
+        channel_id = int(cursor.fetchone()["id"]) if USE_POSTGRES else int(cursor.lastrowid)
         db.commit()
     return redirect_to(f"/channels/{channel_id}", "Canal criado com sucesso.")
 
 
 @app.get("/channels/{channel_id}", response_class=HTMLResponse, name="channel_detail")
-def channel_detail(request: Request, channel_id: int, status: str = "all", q: str = ""):
+def channel_detail(
+    request: Request,
+    channel_id: int,
+    status: str = "all",
+    q: str = "",
+    year: int | None = None,
+    month: str = "",
+    open_settings: int = 0,
+    plan_month: str = "",
+):
     search = q.strip()
     with closing(get_db()) as db:
         channel = get_channel_or_404(db, channel_id)
+        custom_plans: list[dict[str, Any]] = []
+        try:
+            custom_plans = custom_plans_payload(db, channel_id)
+        except Exception as exc:
+            db.rollback()
+            print(
+                f"[DS-PLANNERX] Falha ao carregar planejamentos do canal {channel_id}: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+
+        available_months = [str(item["year_month"]) for item in custom_plans]
+        requested_month = valid_year_month(month) if month else ""
+        if requested_month not in available_months:
+            requested_month = ""
+        current_month = today_local().strftime("%Y-%m")
+        if not requested_month and available_months:
+            if current_month in available_months:
+                requested_month = current_month
+            else:
+                future = [item for item in available_months if item >= current_month]
+                requested_month = min(future) if future else max(available_months)
+        selected_month = requested_month
+
+        selected_plan = None
+        selected_rules: list[Any] = []
+        if selected_month:
+            selected_plan = db.execute(
+                "SELECT * FROM monthly_plans WHERE channel_id = ? AND year_month = ?",
+                (channel_id, selected_month),
+            ).fetchone()
+            projection = custom_month_projection(db, channel_id, selected_month)
+            selected_rules = list(projection.get("rules") or [])
+            goal = int(projection["count"])
+        else:
+            projection = channel_projection(db, channel)
+            goal = int(channel["title_goal"] or 1)
+
         sql = "SELECT * FROM videos WHERE channel_id = ?"
         params: list[Any] = [channel_id]
+        if selected_month:
+            sql += " AND planned_date LIKE ?"
+            params.append(f"{selected_month}-%")
         if status in STATUS_LABELS:
             sql += " AND status = ?"
             params.append(status)
@@ -766,221 +1754,218 @@ def channel_detail(request: Request, channel_id: int, status: str = "all", q: st
             sql += " AND (title LIKE ? OR description LIKE ?)"
             like = f"%{search}%"
             params.extend([like, like])
-        sql += " ORDER BY CASE status WHEN 'production' THEN 1 WHEN 'todo' THEN 2 ELSE 3 END, planned_date IS NULL, planned_date, updated_at DESC"
+        sql += " ORDER BY CASE status WHEN 'production' THEN 1 ELSE 2 END, planned_date IS NULL, planned_date, updated_at DESC"
         videos = db.execute(sql, params).fetchall()
-        stats = channel_stats(db, channel_id, channel["title_goal"])
-        saved_titles = db.execute(
-            "SELECT position, title FROM channel_titles WHERE channel_id = ? ORDER BY position",
-            (channel_id,),
-        ).fetchall()
-        titles_by_position = {int(item["position"]): item["title"] for item in saved_titles}
-        highest_position = max(titles_by_position, default=0)
-        title_slot_count = max(int(channel["title_goal"]), highest_position)
-        title_slots = [
-            {"position": position, "title": titles_by_position.get(position, "")}
-            for position in range(1, title_slot_count + 1)
-        ]
-        periods = db.execute(
-            "SELECT * FROM posting_periods WHERE channel_id = ? ORDER BY start_date, id",
-            (channel_id,),
-        ).fetchall()
-        plan = build_channel_plan(periods)
-        new_period_start = (plan["period_end"] + timedelta(days=1)) if plan["period_end"] else date.today()
-        new_period_end = date(
-            new_period_start.year,
-            new_period_start.month,
-            calendar.monthrange(new_period_start.year, new_period_start.month)[1],
-        )
+
+        stats = channel_stats(db, channel_id, goal, selected_month or None)
+        title_slots = title_bank_slots(db, channel_id, stats["goal"], selected_month or None)
+        daily_stats = daily_goal_stats(db, channel)
+        upcoming = schedule_date_items(db, channel_id, projection.get("schedule_slots") or projection["dates"])
+
+        if selected_month:
+            selected_year, selected_month_number = parse_year_month(selected_month)
+            selected_month_label = f"{MONTH_NAMES_PT[selected_month_number]} de {selected_year}"
+            month_start = date(selected_year, selected_month_number, 1)
+            month_end = date(selected_year, selected_month_number, calendar.monthrange(selected_year, selected_month_number)[1])
+            used_date_counts: dict[str, int] = {}
+            for item in db.execute(
+                "SELECT planned_date, COUNT(*) AS total FROM videos WHERE channel_id = ? AND planned_date LIKE ? AND planned_date IS NOT NULL GROUP BY planned_date",
+                (channel_id, f"{selected_month}-%"),
+            ).fetchall():
+                used_date_counts[str(item["planned_date"])] = int(item["total"] or 0)
+            planned_by_date = projection.get("videos_by_date") or {}
+            default_date = next(
+                (
+                    item for item in projection["dates"]
+                    if used_date_counts.get(item.isoformat(), 0) < int(planned_by_date.get(item.isoformat(), 1))
+                ),
+                None,
+            )
+            default_video_date = (default_date or (projection["dates"][0] if projection["dates"] else month_start)).isoformat()
+        else:
+            selected_month_label = "Geral"
+            month_start = parse_iso_date(channel["start_date"])
+            month_end = projection["period_end"]
+            default_video_date = projection["dates"][0].isoformat() if projection["dates"] else month_start.isoformat()
+
+        calendar_year = min(max(int(year or (selected_month[:4] if selected_month else today_local().year)), 2020), 2100)
+        month_cards: list[dict[str, Any]] = []
+        try:
+            month_cards = month_calendar(db, channel_id, calendar_year)
+        except Exception as exc:
+            db.rollback()
+            print(
+                f"[DS-PLANNERX] Falha ao carregar calendário do canal {channel_id}: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
+
     context = template_context(
         request,
         channel=channel,
         videos=videos,
         stats=stats,
         title_slots=title_slots,
-        periods=plan["periods"],
-        plan=plan,
-        new_period_start=new_period_start.isoformat(),
-        new_period_end=new_period_end.isoformat(),
+        title_status_labels=TITLE_STATUS_LABELS,
+        daily_stats=daily_stats,
+        upcoming=upcoming,
+        calendar_year=calendar_year,
+        month_cards=month_cards,
+        custom_plans=custom_plans,
+        custom_plans_json=json.dumps(custom_plans, ensure_ascii=False),
+        selected_plan_month=valid_year_month(plan_month, today_local()) if plan_month else "",
+        selected_month=selected_month,
+        selected_month_label=selected_month_label,
+        selected_plan=selected_plan,
+        selected_rules=selected_rules,
+        month_start=month_start.isoformat(),
+        month_end=month_end.isoformat(),
+        default_video_date=default_video_date,
+        open_settings=bool(open_settings),
+        projection=projection,
         status_filter=status,
         search=search,
     )
     return templates.TemplateResponse(request, "channel.html", context)
 
 
+@app.post("/channels/{channel_id}/daily-goals", name="save_daily_goals")
+def save_daily_goals(
+    channel_id: int, daily_script_goal: int = Form(1), daily_video_goal: int = Form(1),
+    return_to: str = Form(""),
+):
+    script_goal = min(max(int(daily_script_goal or 1), 1), 999)
+    video_goal = min(max(int(daily_video_goal or 1), 1), 999)
+    with closing(get_db()) as db:
+        get_channel_or_404(db, channel_id)
+        db.execute(
+            "UPDATE channels SET daily_script_goal = ?, daily_video_goal = ?, updated_at = ? WHERE id = ?",
+            (script_goal, video_goal, now_iso(), channel_id),
+        )
+        db.commit()
+    destination = return_to if return_to.startswith(f"/channels/{channel_id}") else f"/channels/{channel_id}"
+    return redirect_to(
+        destination,
+        f"Metas diárias atualizadas: {script_goal} roteiro(s) e {video_goal} vídeo(s) por dia.",
+    )
+
+
 @app.post("/channels/{channel_id}/edit", name="edit_channel")
 def edit_channel(
     channel_id: int, name: str = Form(...), description: str = Form(""), title_goal: int = Form(...),
-    interval_days: int | None = Form(None), frequency_mode: str | None = Form(None),
-    start_date: str | None = Form(None), image: UploadFile | None = File(None),
+    interval_days: int = Form(...), frequency_mode: str = Form("interval"),
+    schedule_mode: str = Form("standard"), start_date: str = Form(...), period_mode: str = Form("months"),
+    period_value: str = Form("1"), planning_month: str = Form(""),
+    calculation_days: str = Form(""), image: UploadFile | None = File(None),
+    image_cloud_url: str = Form(""), image_cloud_name: str = Form(""),
+    image_cloud_mime: str = Form(""), image_cloud_size: str = Form(""),
+    return_to: str = Form(""),
 ):
+    old_image_to_remove = None
     with closing(get_db()) as db:
         channel = get_channel_or_404(db, channel_id)
         image_path = channel["image_path"]
-        if image and image.filename:
+        if image_cloud_url:
+            try:
+                _, new_image, file_type, _, _ = validate_cloud_upload(
+                    image_cloud_url, image_cloud_name, image_cloud_mime, image_cloud_size,
+                )
+                if file_type != "image":
+                    remove_upload(new_image)
+                    raise ValueError("A capa do canal precisa ser uma imagem.")
+                old_image_to_remove = image_path
+                image_path = new_image
+            except ValueError as exc:
+                remove_upload(image_cloud_url)
+                return redirect_to(f"/channels/{channel_id}", str(exc), "error")
+        elif image and image.filename:
             try:
                 _, new_image, file_type, _, _ = save_upload(image)
                 if file_type != "image":
                     remove_upload(new_image)
                     raise ValueError("A capa do canal precisa ser uma imagem.")
-                remove_upload(image_path)
+                old_image_to_remove = image_path
                 image_path = new_image
             except ValueError as exc:
                 return redirect_to(f"/channels/{channel_id}", str(exc), "error")
-        mode = normalize_frequency_mode(frequency_mode or channel["frequency_mode"])
-        frequency_value = normalize_frequency_value(
-            channel["interval_days"] if interval_days is None else interval_days,
-            mode,
-        )
-        normalized_start = parse_iso_date(start_date or channel["start_date"]).isoformat()
+        mode = normalize_frequency_mode(frequency_mode)
+        frequency_value = normalize_frequency_value(interval_days, mode)
+        parsed_start = parse_iso_date(start_date)
+        normalized_period_mode = normalize_period_mode(period_mode)
+        normalized_period_value = normalize_period_value(period_value, normalized_period_mode)
+        selected_month = planning_month or str(channel["planning_month"] or "")
+        period = calculate_period(parsed_start, normalized_period_mode, normalized_period_value, selected_month)
         db.execute(
             """UPDATE channels SET name = ?, description = ?, image_path = ?, title_goal = ?, interval_days = ?,
-            frequency_mode = ?, start_date = ?, updated_at = ? WHERE id = ?""",
-            (name.strip() or channel["name"], description.strip(), image_path, max(1, title_goal), frequency_value, mode, normalized_start, now_iso(), channel_id),
-        )
-        db.commit()
-    return redirect_to(f"/channels/{channel_id}", "Configurações do canal atualizadas.")
-
-
-def _validate_period_values(
-    start_date: str,
-    end_date: str,
-    frequency_mode: str,
-    interval_days: int,
-    videos_per_day: int,
-) -> tuple[date, date, str, int, int]:
-    start = parse_iso_date(start_date)
-    end = parse_iso_date(end_date, start)
-    if end < start:
-        raise ValueError("A data final não pode ser anterior à data inicial.")
-    mode = normalize_frequency_mode(frequency_mode)
-    interval = normalize_frequency_value(interval_days, mode)
-    daily = normalize_videos_per_day(videos_per_day)
-    return start, end, mode, interval, daily
-
-
-@app.post("/channels/{channel_id}/periods", name="create_posting_period")
-def create_posting_period(
-    channel_id: int,
-    name: str = Form("Período de postagem"),
-    start_date: str = Form(...),
-    end_date: str = Form(...),
-    frequency_mode: str = Form("interval"),
-    interval_days: int = Form(2),
-    videos_per_day: int = Form(1),
-):
-    try:
-        start, end, mode, interval, daily = _validate_period_values(
-            start_date, end_date, frequency_mode, interval_days, videos_per_day
-        )
-    except ValueError as exc:
-        return redirect_to(f"/channels/{channel_id}", str(exc), "error")
-    timestamp = now_iso()
-    with closing(get_db()) as db:
-        get_channel_or_404(db, channel_id)
-        insert_and_get_id(
-            db,
-            """INSERT INTO posting_periods
-            (channel_id, name, start_date, end_date, interval_days, frequency_mode, videos_per_day, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            frequency_mode = ?, start_date = ?, planning_month = ?, calculation_days = ?,
+            period_mode = ?, period_value = ?, schedule_mode = ?, updated_at = ? WHERE id = ?""",
             (
-                channel_id,
-                name.strip() or "Período de postagem",
-                start.isoformat(),
-                end.isoformat(),
-                interval,
-                mode,
-                daily,
-                timestamp,
-                timestamp,
+                name.strip() or channel["name"], description.strip(), image_path, max(1, title_goal),
+                frequency_value, mode, parsed_start.isoformat(), period["planning_month"],
+                period["period_days"], period["period_mode"], period["period_value"],
+                normalize_schedule_mode(schedule_mode), now_iso(), channel_id,
             ),
         )
-        db.execute("UPDATE channels SET updated_at = ? WHERE id = ?", (timestamp, channel_id))
         db.commit()
-    return redirect_to(f"/channels/{channel_id}", "Período adicionado com sucesso.")
-
-
-@app.post("/periods/{period_id}/edit", name="edit_posting_period")
-def edit_posting_period(
-    period_id: int,
-    name: str = Form("Período de postagem"),
-    start_date: str = Form(...),
-    end_date: str = Form(...),
-    frequency_mode: str = Form("interval"),
-    interval_days: int = Form(2),
-    videos_per_day: int = Form(1),
-):
-    with closing(get_db()) as db:
-        period = get_period_or_404(db, period_id)
-        try:
-            start, end, mode, interval, daily = _validate_period_values(
-                start_date, end_date, frequency_mode, interval_days, videos_per_day
-            )
-        except ValueError as exc:
-            return redirect_to(f"/channels/{period['channel_id']}", str(exc), "error")
-        timestamp = now_iso()
-        db.execute(
-            """UPDATE posting_periods SET name = ?, start_date = ?, end_date = ?, interval_days = ?,
-            frequency_mode = ?, videos_per_day = ?, updated_at = ? WHERE id = ?""",
-            (
-                name.strip() or period["name"],
-                start.isoformat(),
-                end.isoformat(),
-                interval,
-                mode,
-                daily,
-                timestamp,
-                period_id,
-            ),
-        )
-        db.execute("UPDATE channels SET updated_at = ? WHERE id = ?", (timestamp, period["channel_id"]))
-        db.commit()
-    return redirect_to(f"/channels/{period['channel_id']}", "Período atualizado.")
-
-
-@app.post("/periods/{period_id}/delete", name="delete_posting_period")
-def delete_posting_period(period_id: int):
-    with closing(get_db()) as db:
-        period = get_period_or_404(db, period_id)
-        channel_id = int(period["channel_id"])
-        db.execute("DELETE FROM posting_periods WHERE id = ?", (period_id,))
-        db.execute("UPDATE channels SET updated_at = ? WHERE id = ?", (now_iso(), channel_id))
-        db.commit()
-    return redirect_to(f"/channels/{channel_id}", "Período removido.")
+    if old_image_to_remove and old_image_to_remove != image_path:
+        remove_upload(old_image_to_remove)
+    destination = return_to if return_to.startswith(f"/channels/{channel_id}") else f"/channels/{channel_id}"
+    return redirect_to(destination, "Configurações do canal atualizadas.")
 
 
 @app.post("/channels/{channel_id}/titles", name="save_channel_titles")
 async def save_channel_titles(request: Request, channel_id: int):
     form = await request.form()
-    raw_titles = form.getlist("titles")[:200]
+    raw_titles = form.getlist("titles")[:MONTH_TITLE_MAX_SLOTS]
+    raw_statuses = form.getlist("title_statuses")[:MONTH_TITLE_MAX_SLOTS]
     titles = [str(value).strip()[:500] for value in raw_titles]
+    statuses = [
+        str(value) if str(value) in TITLE_STATUS_LABELS else "ready"
+        for value in raw_statuses
+    ]
+    raw_month = str(form.get("year_month") or "").strip()
+    selected_month = valid_year_month(raw_month) if raw_month else ""
     timestamp = now_iso()
     with closing(get_db()) as db:
         channel = get_channel_or_404(db, channel_id)
-        minimum_slots = max(1, int(channel["title_goal"] or 1))
+        if selected_month:
+            minimum_slots = custom_schedule_total(db, channel_id, selected_month)
+            position_base = month_title_position_base(selected_month)
+        else:
+            minimum_slots = max(1, int(channel["title_goal"] or 1))
+            position_base = 0
+        minimum_slots = min(max(0, minimum_slots), MONTH_TITLE_MAX_SLOTS)
         if len(titles) < minimum_slots:
             titles.extend([""] * (minimum_slots - len(titles)))
-        for position, title in enumerate(titles, start=1):
+        if len(statuses) < len(titles):
+            statuses.extend(["ready"] * (len(titles) - len(statuses)))
+        for local_position, title in enumerate(titles, start=1):
+            stored_position = position_base + local_position
+            title_status = statuses[local_position - 1] if local_position - 1 < len(statuses) else "ready"
             if title:
                 db.execute(
-                    """INSERT INTO channel_titles (channel_id, position, title, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?)
+                    """INSERT INTO channel_titles (channel_id, position, title, status, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(channel_id, position) DO UPDATE SET
-                    title = excluded.title, updated_at = excluded.updated_at""",
-                    (channel_id, position, title, timestamp, timestamp),
+                    title = excluded.title, status = excluded.status, updated_at = excluded.updated_at""",
+                    (channel_id, stored_position, title, title_status, timestamp, timestamp),
                 )
             else:
                 db.execute(
                     "DELETE FROM channel_titles WHERE channel_id = ? AND position = ?",
-                    (channel_id, position),
+                    (channel_id, stored_position),
                 )
         db.execute("UPDATE channels SET updated_at = ? WHERE id = ?", (timestamp, channel_id))
         db.commit()
-        saved_count = db.execute(
-            "SELECT COUNT(*) AS total FROM channel_titles WHERE channel_id = ? AND TRIM(title) <> ''",
-            (channel_id,),
-        ).fetchone()["total"]
+        saved_count = sum(
+            1 for item in title_bank_records(db, channel_id, selected_month or None)
+            if str(item["title"] or "").strip()
+        )
+    destination = f"/channels/{channel_id}"
+    if selected_month:
+        destination += f"?month={selected_month}&year={selected_month[:4]}"
     return redirect_to(
-        f"/channels/{channel_id}",
+        destination,
         f"Banco de títulos salvo: {saved_count} título{'s' if saved_count != 1 else ''} preenchido{'s' if saved_count != 1 else ''}.",
     )
 
@@ -1009,17 +1994,31 @@ def delete_channel(channel_id: int):
 
 @app.post("/channels/{channel_id}/videos", name="create_video")
 def create_video(
-    channel_id: int, title: str = Form(...), status: str = Form("todo"),
+    channel_id: int, title: str = Form(...), status: str = Form("production"),
     planned_date: str = Form(""), description: str = Form(""),
     cover_image: UploadFile | None = File(None),
+    cover_cloud_url: str = Form(""), cover_cloud_name: str = Form(""),
+    cover_cloud_mime: str = Form(""), cover_cloud_size: str = Form(""),
+    return_to: str = Form(""),
 ):
     title = title.strip()
     if not title:
         return redirect_to(f"/channels/{channel_id}", "Digite um título para o card do vídeo.", "error")
     if status not in STATUS_LABELS:
-        status = "todo"
+        status = "production"
     cover_image_path = None
-    if cover_image and cover_image.filename:
+    if cover_cloud_url:
+        try:
+            _, cover_image_path, file_type, _, _ = validate_cloud_upload(
+                cover_cloud_url, cover_cloud_name, cover_cloud_mime, cover_cloud_size,
+            )
+            if file_type != "image":
+                remove_upload(cover_image_path)
+                raise ValueError("A capa do vídeo precisa ser uma imagem.")
+        except ValueError as exc:
+            remove_upload(cover_cloud_url)
+            return redirect_to(f"/channels/{channel_id}", str(exc), "error")
+    elif cover_image and cover_image.filename:
         try:
             _, cover_image_path, file_type, _, _ = save_upload(cover_image)
             if file_type != "image":
@@ -1028,17 +2027,27 @@ def create_video(
         except ValueError as exc:
             return redirect_to(f"/channels/{channel_id}", str(exc), "error")
     timestamp = now_iso()
+    insert_sql = """INSERT INTO videos (
+        channel_id, title, status, planned_date, description, cover_image_path,
+        script_completed_at, completed_at, published_at, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+    if USE_POSTGRES:
+        insert_sql += " RETURNING id"
     with closing(get_db()) as db:
         get_channel_or_404(db, channel_id)
-        video_id = insert_and_get_id(
-            db,
-            """INSERT INTO videos (channel_id, title, status, planned_date, description, cover_image_path, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (channel_id, title, status, planned_date or None, description.strip(), cover_image_path, timestamp, timestamp),
+        completed_at = timestamp if status == "completed" else None
+        cursor = db.execute(
+            insert_sql,
+            (
+                channel_id, title, status, planned_date or None, description.strip(), cover_image_path,
+                None, completed_at, None, timestamp, timestamp,
+            ),
         )
+        video_id = int(cursor.fetchone()["id"]) if USE_POSTGRES else int(cursor.lastrowid)
         db.execute("UPDATE channels SET updated_at = ? WHERE id = ?", (timestamp, channel_id))
         db.commit()
-    return redirect_to(f"/videos/{video_id}", "Card de vídeo criado.")
+    destination = return_to if return_to.startswith("/channels/") else f"/videos/{video_id}"
+    return redirect_to(destination, "Card de vídeo criado.")
 
 
 @app.get("/videos/{video_id}", response_class=HTMLResponse, name="video_detail")
@@ -1055,17 +2064,32 @@ def edit_video(
     video_id: int, title: str = Form(...), status: str = Form(...),
     planned_date: str = Form(""), description: str = Form(""),
     cover_image: UploadFile | None = File(None), remove_cover: str = Form(""),
+    cover_cloud_url: str = Form(""), cover_cloud_name: str = Form(""),
+    cover_cloud_mime: str = Form(""), cover_cloud_size: str = Form(""),
 ):
     with closing(get_db()) as db:
         video = get_video_or_404(db, video_id)
         if status not in STATUS_LABELS:
-            status = video["status"]
+            status = video["status"] if video["status"] in STATUS_LABELS else "production"
         cover_image_path = video["cover_image_path"]
         old_cover_to_remove = None
         if remove_cover == "1" and cover_image_path:
             old_cover_to_remove = cover_image_path
             cover_image_path = None
-        if cover_image and cover_image.filename:
+        if cover_cloud_url:
+            try:
+                _, new_cover, file_type, _, _ = validate_cloud_upload(
+                    cover_cloud_url, cover_cloud_name, cover_cloud_mime, cover_cloud_size,
+                )
+                if file_type != "image":
+                    remove_upload(new_cover)
+                    raise ValueError("A capa do vídeo precisa ser uma imagem.")
+                old_cover_to_remove = video["cover_image_path"]
+                cover_image_path = new_cover
+            except ValueError as exc:
+                remove_upload(cover_cloud_url)
+                return redirect_to(f"/videos/{video_id}", str(exc), "error")
+        elif cover_image and cover_image.filename:
             try:
                 _, new_cover, file_type, _, _ = save_upload(cover_image)
                 if file_type != "image":
@@ -1076,9 +2100,18 @@ def edit_video(
             except ValueError as exc:
                 return redirect_to(f"/videos/{video_id}", str(exc), "error")
         timestamp = now_iso()
+        completed_at = video["completed_at"]
+        if status == "completed" and video["status"] != "completed":
+            completed_at = timestamp
+        elif status != "completed":
+            completed_at = None
         db.execute(
-            "UPDATE videos SET title = ?, description = ?, status = ?, planned_date = ?, cover_image_path = ?, updated_at = ? WHERE id = ?",
-            (title.strip() or video["title"], description.strip(), status, planned_date or None, cover_image_path, timestamp, video_id),
+            """UPDATE videos SET title = ?, description = ?, status = ?, planned_date = ?,
+            cover_image_path = ?, completed_at = ?, updated_at = ? WHERE id = ?""",
+            (
+                title.strip() or video["title"], description.strip(), status, planned_date or None,
+                cover_image_path, completed_at, timestamp, video_id,
+            ),
         )
         db.execute("UPDATE channels SET updated_at = ? WHERE id = ?", (timestamp, video["channel_id"]))
         db.commit()
@@ -1095,22 +2128,113 @@ async def api_video_status(request: Request, video_id: int):
         return JSONResponse({"ok": False, "message": "Status inválido"}, status_code=400)
     with closing(get_db()) as db:
         video = get_video_or_404(db, video_id)
+        channel = get_channel_or_404(db, video["channel_id"])
+        before_daily = daily_goal_stats(db, channel)
+        video_month = str(video["planned_date"] or "")[:7] if video["planned_date"] else ""
+        month_goal = custom_schedule_total(db, video["channel_id"], video_month) if video_month else 0
+        scoped_month = video_month if month_goal else None
+        before_stats = channel_stats(
+            db, video["channel_id"], month_goal if scoped_month else channel["title_goal"], scoped_month,
+        )
         timestamp = now_iso()
-        db.execute("UPDATE videos SET status = ?, updated_at = ? WHERE id = ?", (status, timestamp, video_id))
+        completed_at = video["completed_at"]
+        if status == "completed" and video["status"] != "completed":
+            completed_at = timestamp
+        elif status != "completed":
+            completed_at = None
+        db.execute(
+            "UPDATE videos SET status = ?, completed_at = ?, updated_at = ? WHERE id = ?",
+            (status, completed_at, timestamp, video_id),
+        )
         db.execute("UPDATE channels SET updated_at = ? WHERE id = ?", (timestamp, video["channel_id"]))
         db.commit()
+        after_daily = daily_goal_stats(db, channel)
+        stats = channel_stats(
+            db, video["channel_id"], month_goal if scoped_month else channel["title_goal"], scoped_month,
+        )
+        celebrate_kind = achieved_kind(
+            before_daily, after_daily,
+            bool(before_stats["completed"] >= before_stats["goal"]),
+            bool(stats["completed"] >= stats["goal"]),
+        )
+    return {"ok": True, "label": STATUS_LABELS[status], "stats": stats, "celebration": celebration_payload(celebrate_kind)}
+
+
+@app.post("/api/videos/{video_id}/script-ready", name="api_video_script_ready")
+async def api_video_script_ready(request: Request, video_id: int):
+    payload = await request.json()
+    ready = bool(payload.get("ready"))
+    with closing(get_db()) as db:
+        video = get_video_or_404(db, video_id)
         channel = get_channel_or_404(db, video["channel_id"])
-        stats = channel_stats(db, video["channel_id"], channel["title_goal"])
-    return {"ok": True, "label": STATUS_LABELS[status], "stats": stats}
+        before_daily = daily_goal_stats(db, channel)
+        timestamp = now_iso()
+        script_completed_at = timestamp if ready else None
+        db.execute(
+            "UPDATE videos SET script_completed_at = ?, updated_at = ? WHERE id = ?",
+            (script_completed_at, timestamp, video_id),
+        )
+        db.execute("UPDATE channels SET updated_at = ? WHERE id = ?", (timestamp, video["channel_id"]))
+        db.commit()
+        daily_stats = daily_goal_stats(db, channel)
+        celebrate_kind = achieved_kind(before_daily, daily_stats)
+    return {"ok": True, "ready": ready, "daily_stats": daily_stats, "celebration": celebration_payload(celebrate_kind)}
+
+
+@app.post("/api/videos/{video_id}/published", name="api_video_published")
+async def api_video_published(request: Request, video_id: int):
+    payload = await request.json()
+    published = bool(payload.get("published"))
+    with closing(get_db()) as db:
+        video = get_video_or_404(db, video_id)
+        timestamp = now_iso()
+        published_at = timestamp if published else None
+        db.execute(
+            "UPDATE videos SET published_at = ?, updated_at = ? WHERE id = ?",
+            (published_at, timestamp, video_id),
+        )
+        db.execute("UPDATE channels SET updated_at = ? WHERE id = ?", (timestamp, video["channel_id"]))
+        db.commit()
+    return {"ok": True, "published": published, "published_at": published_at}
 
 
 @app.post("/videos/{video_id}/upload", name="upload_attachments")
-def upload_attachments(video_id: int, files: list[UploadFile] = File(...)):
+def upload_attachments(
+    video_id: int,
+    files: list[UploadFile] | None = File(None),
+    cloud_files_json: str = Form(""),
+):
     inserted = 0
     errors: list[str] = []
+    cloud_items: list[dict[str, Any]] = []
+    if cloud_files_json.strip():
+        try:
+            decoded = json.loads(cloud_files_json)
+            if isinstance(decoded, list):
+                cloud_items = [item for item in decoded[:100] if isinstance(item, dict)]
+        except json.JSONDecodeError:
+            errors.append("A lista de arquivos enviados ficou inválida. Tente novamente.")
     with closing(get_db()) as db:
         video = get_video_or_404(db, video_id)
-        for upload in files:
+        for item in cloud_items:
+            cloud_url = str(item.get("stored_name") or item.get("url") or "")
+            try:
+                original, stored, file_type, mime, size = validate_cloud_upload(
+                    cloud_url,
+                    str(item.get("original_name") or item.get("name") or "arquivo"),
+                    str(item.get("mime_type") or item.get("type") or ""),
+                    item.get("size_bytes") or item.get("size") or 0,
+                )
+                db.execute(
+                    """INSERT INTO attachments (video_id, original_name, stored_name, file_type, mime_type, size_bytes, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (video_id, original, stored, file_type, mime, size, now_iso()),
+                )
+                inserted += 1
+            except ValueError as exc:
+                remove_upload(cloud_url)
+                errors.append(str(exc))
+        for upload in files or []:
             if not upload.filename:
                 continue
             try:
@@ -1124,8 +2248,9 @@ def upload_attachments(video_id: int, files: list[UploadFile] = File(...)):
             except ValueError as exc:
                 errors.append(str(exc))
         timestamp = now_iso()
-        db.execute("UPDATE videos SET updated_at = ? WHERE id = ?", (timestamp, video_id))
-        db.execute("UPDATE channels SET updated_at = ? WHERE id = ?", (timestamp, video["channel_id"]))
+        if inserted:
+            db.execute("UPDATE videos SET updated_at = ? WHERE id = ?", (timestamp, video_id))
+            db.execute("UPDATE channels SET updated_at = ? WHERE id = ?", (timestamp, video["channel_id"]))
         db.commit()
     if errors and not inserted:
         return redirect_to(f"/videos/{video_id}", " | ".join(errors), "error")
@@ -1198,17 +2323,308 @@ def delete_video(video_id: int):
     return redirect_to(f"/channels/{video['channel_id']}", "Card de vídeo excluído.")
 
 
+@app.post("/channels/{channel_id}/custom-plans", name="save_custom_month_plan")
+async def save_custom_month_plan(request: Request, channel_id: int):
+    form = await request.form()
+    raw_month = str(form.get("year_month") or "").strip()
+    if not raw_month:
+        return redirect_to(f"/channels/{channel_id}?open_settings=1", "Escolha o mês do planejamento.", "error")
+    normalized_month = valid_year_month(raw_month)
+    year, month = parse_year_month(normalized_month)
+    lower = date(year, month, 1)
+    upper = date(year, month, calendar.monthrange(year, month)[1])
+    notes = str(form.get("notes") or "").strip()[:4000]
+
+    starts = [str(value).strip() for value in form.getlist("rule_start_dates")]
+    ends = [str(value).strip() for value in form.getlist("rule_end_dates")]
+    modes = [str(value).strip() for value in form.getlist("rule_frequency_modes")]
+    intervals = [str(value).strip() for value in form.getlist("rule_interval_days")]
+    videos_per_day_values = [str(value).strip() for value in form.getlist("rule_videos_per_day")]
+    total_rows = max(len(starts), len(ends), len(modes), len(intervals), len(videos_per_day_values))
+    parsed_rules: list[tuple[date, date, str, int, int]] = []
+
+    for index in range(total_rows):
+        start_raw = starts[index] if index < len(starts) else ""
+        end_raw = ends[index] if index < len(ends) else ""
+        if not start_raw and not end_raw:
+            continue
+        try:
+            start_date = datetime.strptime(start_raw, "%Y-%m-%d").date()
+            end_date = datetime.strptime(end_raw, "%Y-%m-%d").date()
+        except ValueError:
+            return redirect_to(
+                f"/channels/{channel_id}?open_settings=1&plan_month={normalized_month}",
+                f"Confira as datas da regra {index + 1}.", "error",
+            )
+        if start_date < lower or start_date > upper or end_date < lower or end_date > upper:
+            return redirect_to(
+                f"/channels/{channel_id}?open_settings=1&plan_month={normalized_month}",
+                f"A regra {index + 1} precisa ficar dentro de {MONTH_NAMES_PT[month]} de {year}.", "error",
+            )
+        if end_date < start_date:
+            return redirect_to(
+                f"/channels/{channel_id}?open_settings=1&plan_month={normalized_month}",
+                f"Na regra {index + 1}, a data final não pode vir antes da inicial.", "error",
+            )
+        mode = normalize_frequency_mode(modes[index] if index < len(modes) else "interval")
+        raw_interval = intervals[index] if index < len(intervals) else "1"
+        interval = normalize_frequency_value(raw_interval, mode)
+        videos_per_day = normalize_videos_per_day(
+            videos_per_day_values[index] if index < len(videos_per_day_values) else 1
+        )
+        parsed_rules.append((start_date, end_date, mode, interval, videos_per_day))
+
+    if not parsed_rules:
+        return redirect_to(
+            f"/channels/{channel_id}?open_settings=1&plan_month={normalized_month}",
+            "Adicione pelo menos um período de postagem.", "error",
+        )
+
+    timestamp = now_iso()
+    with closing(get_db()) as db:
+        get_channel_or_404(db, channel_id)
+        db.execute(
+            """INSERT INTO monthly_plans (channel_id, year_month, notes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(channel_id, year_month) DO UPDATE SET notes = excluded.notes, updated_at = excluded.updated_at""",
+            (channel_id, normalized_month, notes, timestamp, timestamp),
+        )
+        db.execute("DELETE FROM schedule_rules WHERE channel_id = ? AND year_month = ?", (channel_id, normalized_month))
+        for start_date, end_date, mode, interval, videos_per_day in parsed_rules:
+            db.execute(
+                """INSERT INTO schedule_rules (
+                    channel_id, year_month, start_date, end_date, frequency_mode, interval_days,
+                    videos_per_day, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    channel_id, normalized_month, start_date.isoformat(), end_date.isoformat(),
+                    mode, interval, videos_per_day, timestamp, timestamp,
+                ),
+            )
+        db.execute(
+            "UPDATE channels SET schedule_mode = 'custom', updated_at = ? WHERE id = ?",
+            (timestamp, channel_id),
+        )
+        db.commit()
+        slots = custom_schedule_slots(db, channel_id, normalized_month)
+        calculated_dates = len(slots)
+        calculated_videos = sum(int(slot["videos_per_day"]) for slot in slots)
+    return redirect_to(
+        f"/channels/{channel_id}?month={normalized_month}&year={year}",
+        f"Planejamento de {MONTH_NAMES_PT[month]} salvo com {calculated_videos} vídeo(s) em {calculated_dates} data(s) única(s).",
+    )
+
+
+@app.post("/channels/{channel_id}/custom-plans/{year_month}/delete", name="delete_custom_month_plan")
+def delete_custom_month_plan(channel_id: int, year_month: str):
+    normalized_month = valid_year_month(year_month)
+    with closing(get_db()) as db:
+        get_channel_or_404(db, channel_id)
+        db.execute("DELETE FROM schedule_rules WHERE channel_id = ? AND year_month = ?", (channel_id, normalized_month))
+        db.execute("DELETE FROM monthly_plans WHERE channel_id = ? AND year_month = ?", (channel_id, normalized_month))
+        db.execute("UPDATE channels SET updated_at = ? WHERE id = ?", (now_iso(), channel_id))
+        db.commit()
+    return redirect_to(f"/channels/{channel_id}", "Planejamento mensal removido. Os cards de vídeo foram mantidos.")
+
+
+@app.get("/channels/{channel_id}/months/{year_month}", response_class=HTMLResponse, name="monthly_plan")
+def monthly_plan(
+    request: Request, channel_id: int, year_month: str, status: str = "all", q: str = "",
+):
+    normalized_month = valid_year_month(year_month)
+    query = f"month={normalized_month}&year={normalized_month[:4]}"
+    if status in STATUS_LABELS:
+        query += f"&status={quote(status)}"
+    if q.strip():
+        query += f"&q={quote(q.strip())}"
+    return RedirectResponse(f"/channels/{channel_id}?{query}", status_code=303)
+
+
+@app.post("/channels/{channel_id}/months/{year_month}/plan", name="save_monthly_plan")
+def save_monthly_plan(channel_id: int, year_month: str, notes: str = Form("")):
+    normalized_month = valid_year_month(year_month)
+    timestamp = now_iso()
+    with closing(get_db()) as db:
+        get_channel_or_404(db, channel_id)
+        db.execute(
+            """INSERT INTO monthly_plans (channel_id, year_month, notes, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(channel_id, year_month) DO UPDATE SET notes = excluded.notes, updated_at = excluded.updated_at""",
+            (channel_id, normalized_month, notes.strip(), timestamp, timestamp),
+        )
+        db.execute(
+            "UPDATE channels SET schedule_mode = 'custom', updated_at = ? WHERE id = ?",
+            (timestamp, channel_id),
+        )
+        db.commit()
+    return redirect_to(f"/channels/{channel_id}/months/{normalized_month}", "Planejamento mensal salvo.")
+
+
+@app.post("/channels/{channel_id}/months/{year_month}/rules", name="add_schedule_rule")
+def add_schedule_rule(
+    channel_id: int, year_month: str, start_date: str = Form(...), end_date: str = Form(...),
+    frequency_mode: str = Form("interval"), interval_days: int = Form(1),
+    videos_per_day: int = Form(1),
+):
+    normalized_month = valid_year_month(year_month)
+    year, month = parse_year_month(normalized_month)
+    lower = date(year, month, 1)
+    upper = date(year, month, calendar.monthrange(year, month)[1])
+    start = parse_iso_date(start_date, lower)
+    end = parse_iso_date(end_date, upper)
+    if start < lower or start > upper or end < lower or end > upper:
+        return redirect_to(
+            f"/channels/{channel_id}/months/{normalized_month}",
+            "As datas da regra precisam ficar dentro do mês selecionado.", "error",
+        )
+    if end < start:
+        return redirect_to(f"/channels/{channel_id}/months/{normalized_month}", "A data final não pode vir antes da inicial.", "error")
+    mode = normalize_frequency_mode(frequency_mode)
+    value = normalize_frequency_value(interval_days, mode)
+    daily_quantity = normalize_videos_per_day(videos_per_day)
+    timestamp = now_iso()
+    with closing(get_db()) as db:
+        get_channel_or_404(db, channel_id)
+        db.execute(
+            """INSERT INTO schedule_rules (
+                channel_id, year_month, start_date, end_date, frequency_mode, interval_days,
+                videos_per_day, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (channel_id, normalized_month, start.isoformat(), end.isoformat(), mode, value, daily_quantity, timestamp, timestamp),
+        )
+        db.execute(
+            """INSERT INTO monthly_plans (channel_id, year_month, notes, created_at, updated_at)
+            VALUES (?, ?, '', ?, ?)
+            ON CONFLICT(channel_id, year_month) DO UPDATE SET updated_at = excluded.updated_at""",
+            (channel_id, normalized_month, timestamp, timestamp),
+        )
+        db.execute("UPDATE channels SET schedule_mode = 'custom', updated_at = ? WHERE id = ?", (timestamp, channel_id))
+        db.commit()
+    return redirect_to(
+        f"/channels/{channel_id}/months/{normalized_month}",
+        "Regra adicionada. As datas e a quantidade de vídeos foram recalculadas.",
+    )
+
+
+@app.post("/schedule-rules/{rule_id}/delete", name="delete_schedule_rule")
+def delete_schedule_rule(rule_id: int):
+    with closing(get_db()) as db:
+        rule = db.execute("SELECT * FROM schedule_rules WHERE id = ?", (rule_id,)).fetchone()
+        if rule is None:
+            raise HTTPException(status_code=404)
+        db.execute("DELETE FROM schedule_rules WHERE id = ?", (rule_id,))
+        db.execute("UPDATE channels SET updated_at = ? WHERE id = ?", (now_iso(), rule["channel_id"]))
+        db.commit()
+    return redirect_to(f"/channels/{rule['channel_id']}/months/{rule['year_month']}", "Regra removida.")
+
+
+@app.get("/production-flow", response_class=HTMLResponse, name="production_flow")
+def production_flow(request: Request, channel_id: int | None = None, month: str = ""):
+    selected_month = valid_year_month(month)
+    with closing(get_db()) as db:
+        channels = db.execute("SELECT * FROM channels ORDER BY name").fetchall()
+        selected_channel = None
+        if channels:
+            selected_id = int(channel_id or channels[0]["id"])
+            selected_channel = next((item for item in channels if int(item["id"]) == selected_id), channels[0])
+            selected_id = int(selected_channel["id"])
+            logs = db.execute(
+                "SELECT * FROM production_logs WHERE channel_id = ? AND history_month = ? ORDER BY work_date DESC, created_at DESC",
+                (selected_id, selected_month),
+            ).fetchall()
+            month_rows = db.execute(
+                "SELECT DISTINCT history_month FROM production_logs WHERE channel_id = ? ORDER BY history_month DESC",
+                (selected_id,),
+            ).fetchall()
+            available_months = [row["history_month"] for row in month_rows]
+            if selected_month not in available_months:
+                available_months.insert(0, selected_month)
+            default_work_date = today_local().isoformat() if today_local().strftime("%Y-%m") == selected_month else f"{selected_month}-01"
+            grouped: list[dict[str, Any]] = []
+            for work_date in sorted({row["work_date"] for row in logs}, reverse=True):
+                entries = [row for row in logs if row["work_date"] == work_date]
+                stats = daily_goal_stats(db, selected_channel, parse_iso_date(work_date))
+                grouped.append({"date": work_date, "date_br": date_br(work_date), "entries": entries, "stats": stats})
+        else:
+            logs, available_months, grouped = [], [selected_month], []
+            default_work_date = today_local().isoformat()
+    return templates.TemplateResponse(
+        request,
+        "production_flow.html",
+        template_context(
+            request,
+            channels=channels,
+            selected_channel=selected_channel,
+            selected_month=selected_month,
+            available_months=available_months,
+            grouped_logs=grouped,
+            production_status_labels=PRODUCTION_LOG_STATUS,
+            default_work_date=default_work_date,
+        ),
+    )
+
+
+@app.post("/production-flow", name="add_production_log")
+def add_production_log(
+    channel_id: int = Form(...), history_month: str = Form(...), video_title: str = Form(...),
+    work_date: str = Form(...), operator_name: str = Form(...), status: str = Form(...),
+):
+    normalized_month = valid_year_month(history_month)
+    selected_date = parse_iso_date(work_date)
+    if selected_date.strftime("%Y-%m") != normalized_month:
+        return redirect_to(
+            f"/production-flow?channel_id={channel_id}&month={normalized_month}",
+            "A data precisa pertencer ao mês escolhido para o histórico.", "error",
+        )
+    if status not in PRODUCTION_LOG_STATUS:
+        return redirect_to(f"/production-flow?channel_id={channel_id}&month={normalized_month}", "Status inválido.", "error")
+    if not video_title.strip() or not operator_name.strip():
+        return redirect_to(f"/production-flow?channel_id={channel_id}&month={normalized_month}", "Preencha o título e o nome do operador.", "error")
+    timestamp = now_iso()
+    with closing(get_db()) as db:
+        channel = get_channel_or_404(db, channel_id)
+        before = daily_goal_stats(db, channel, selected_date)
+        db.execute(
+            """INSERT INTO production_logs (
+                channel_id, history_month, video_title, work_date, operator_name, status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (channel_id, normalized_month, video_title.strip(), selected_date.isoformat(), operator_name.strip(), status, timestamp, timestamp),
+        )
+        db.commit()
+        after = daily_goal_stats(db, channel, selected_date)
+        celebrate_kind = achieved_kind(before, after)
+    target = f"/production-flow?channel_id={channel_id}&month={normalized_month}"
+    if celebrate_kind:
+        target += f"&celebrate={celebrate_kind}"
+    return redirect_to(target, "Atividade adicionada ao Fluxo de Produção.")
+
+
+@app.post("/production-flow/{log_id}/delete", name="delete_production_log")
+def delete_production_log(log_id: int):
+    with closing(get_db()) as db:
+        entry = db.execute("SELECT * FROM production_logs WHERE id = ?", (log_id,)).fetchone()
+        if entry is None:
+            raise HTTPException(status_code=404)
+        db.execute("DELETE FROM production_logs WHERE id = ?", (log_id,))
+        db.commit()
+    return redirect_to(
+        f"/production-flow?channel_id={entry['channel_id']}&month={entry['history_month']}",
+        "Atividade removida do histórico.",
+    )
+
+
 @app.get("/uploads/{filename:path}", name="uploaded_file")
-def uploaded_file(filename: str):
+def uploaded_file(filename: str, download: int = 0):
+    if filename.startswith(("https://", "http://")):
+        if not is_vercel_blob_url(filename):
+            raise HTTPException(status_code=404)
+        target = download_url(filename) if download else filename
+        return RedirectResponse(target, status_code=307)
     path = UPLOAD_DIR / filename
-    if IS_VERCEL and (not path.exists() or not path.is_file()):
-        # Compatibilidade com arquivos antigos que já estavam versionados em
-        # static/uploads antes da migração para Blob.
-        legacy_path = BASE_DIR / "static" / "uploads" / filename
-        if legacy_path.exists() and legacy_path.is_file():
-            path = legacy_path
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404)
+    if download:
+        return FileResponse(path, filename=path.name, content_disposition_type="attachment")
     return FileResponse(path)
 
 
@@ -1217,7 +2633,18 @@ async def not_found(request: Request, _exc):
     return templates.TemplateResponse(request, "404.html", template_context(request), status_code=404)
 
 
-init_db()
+try:
+    init_db()
+except Exception as exc:
+    if IS_VERCEL:
+        # Mantém a mensagem segura na interface, mas registra o erro real nos
+        # logs da Vercel para facilitar qualquer diagnóstico futuro.
+        print(f"[DS-PLANNERX] Falha ao preparar o banco: {type(exc).__name__}: {exc}", flush=True)
+        message = "Não foi possível conectar ou preparar o banco Postgres. Confira DATABASE_URL e faça um novo deploy."
+        if message not in CONFIG_ERRORS:
+            CONFIG_ERRORS.append(message)
+    else:
+        raise
 
 if __name__ == "__main__":
     port = int(os.environ.get("PLANNERX_PORT", "5050"))

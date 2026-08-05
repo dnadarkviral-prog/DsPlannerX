@@ -1,11 +1,11 @@
 {% extends 'base.html' %}
-{% block title %}Painel geral — DS - PLANNERX{% endblock %}
+{% block title %}DS-PLANNERX{% endblock %}
 {% block page_title %}Visão geral dos canais{% endblock %}
 
 {% block content %}
 <section class="stats-grid">
   <article class="stat-card"><div class="stat-icon purple">📺</div><div><span>Canais cadastrados</span><strong>{{ aggregate.channels }}</strong></div></article>
-  <article class="stat-card"><div class="stat-icon silver">📝</div><div><span>Pra fazer</span><strong>{{ aggregate.todo }}</strong></div></article>
+  <article class="stat-card"><div class="stat-icon silver">🎞️</div><div><span>Total de vídeos</span><strong>{{ aggregate.total }}</strong></div></article>
   <article class="stat-card"><div class="stat-icon orange">🎬</div><div><span>Em produção</span><strong>{{ aggregate.production }}</strong></div></article>
   <article class="stat-card"><div class="stat-icon green">✅</div><div><span>Concluídos</span><strong>{{ aggregate.completed }}</strong></div></article>
 </section>
@@ -20,7 +20,7 @@
   {% for card in cards %}
   <a class="channel-card" href="{{ url_for('channel_detail', channel_id=card.channel.id) }}">
     <div class="channel-cover {% if not card.channel.image_path %}gradient-cover{% endif %}"
-         {% if card.channel.image_path %}style="background-image:url('{{ media_url(card.channel.image_path) }}')"{% endif %}>
+         {% if card.channel.image_path %}style="background-image:url('{{ card.channel.image_path|asset_url }}')"{% endif %}>
       <div class="cover-overlay"></div>
       <div class="channel-badge">📡 CANAL</div>
       <div class="channel-title-wrap">
@@ -30,16 +30,15 @@
     </div>
     <div class="channel-body">
       <div class="status-row compact">
-        <span class="status-chip todo">📝 {{ card.stats.todo }} pra fazer</span>
         <span class="status-chip production">🎬 {{ card.stats.production }} em produção</span>
         <span class="status-chip completed">✅ {{ card.stats.completed }} concluídos</span>
       </div>
       <div class="progress-head"><span>Progresso da meta</span><strong>{{ card.stats.completed }}/{{ card.stats.goal }}</strong></div>
       <div class="progress-track"><div class="progress-fill" style="width:{{ card.stats.progress }}%"></div></div>
       <div class="channel-meta">
-        <span>🗓️ {{ card.plan.period_count }} período{{ 's' if card.plan.period_count != 1 else '' }}</span>
-        <span>🎯 {{ card.plan.total_videos }} vídeo{{ 's' if card.plan.total_videos != 1 else '' }} em {{ card.plan.unique_dates }} data{{ 's' if card.plan.unique_dates != 1 else '' }}</span>
-        <span>✍️ {{ card.stats.remaining_titles }} títulos restantes</span>
+        <span>{{ '🧩' if card.projection.schedule_mode == 'custom' else ('📆' if card.projection.frequency_mode == 'interval' else '⏸️') }} {{ card.projection.frequency_text_compact|capitalize }}</span>
+        <span>🎯 {{ card.projection.count }} vídeos em {{ card.projection.period_days }} dias</span>
+        <span>{{ card.stats.remaining_titles }} títulos restantes</span>
       </div>
       <div class="open-link">Abrir planejamento <span>→</span></div>
     </div>
