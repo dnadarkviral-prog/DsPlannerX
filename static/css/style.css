@@ -380,49 +380,143 @@ body.modal-open { overflow: hidden; }
   .frequency-mode-option > span { min-height: 68px; }
 }
 
-/* Planejamento por períodos e quantidade explícita de vídeos por data */
-.frequency-highlight.schedule-total { align-items: baseline; flex-wrap: wrap; }
-.frequency-highlight.schedule-total strong { font-size: 19px; }
-.frequency-rule-badge.multi { max-width: 100%; line-height: 1.45; }
-.schedule-period-summary { display: grid; grid-template-columns: minmax(0, 1fr) 92px; gap: 8px; margin: 12px 0 8px; }
-.schedule-period-summary > div { display: grid; gap: 4px; padding: 10px; border: 1px solid var(--line); border-radius: 11px; background: rgba(255,255,255,.025); }
-.schedule-period-summary small { color: var(--muted); font-size: 7px; letter-spacing: .08em; }
-.schedule-period-summary strong { font-size: 10px; }
-.schedule-union-note { margin-bottom: 11px; padding: 8px 9px; border: 1px solid rgba(155,77,255,.2); border-radius: 10px; color: #bbaec8; background: rgba(155,77,255,.045); font-size: 8px; line-height: 1.5; }
-.schedule-union-note strong { color: var(--silver); }
-.date-item.schedule-date { position: relative; padding-right: 72px; }
-.date-item.schedule-date.today { border-color: rgba(191, 58, 255, .75); background: linear-gradient(90deg, rgba(173,38,232,.28), rgba(83,20,121,.11)); }
-.date-item.schedule-date.published { border-color: rgba(86,227,159,.48); background: rgba(31,116,79,.12); }
-.date-item.schedule-date.late { border-color: rgba(255,174,87,.26); }
-.date-item.schedule-date.next { border-color: rgba(177,110,255,.35); background: rgba(155,77,255,.07); }
-.daily-video-badge { position: absolute; right: 9px; top: 50%; transform: translateY(-50%); max-width: 62px; padding: 5px 7px; border-radius: 999px; color: #d9c7ed; background: rgba(155,77,255,.11); font-size: 7px; line-height: 1.2; text-align: center; }
-.date-item.schedule-date.published .daily-video-badge { color: #9af2c5; background: rgba(86,227,159,.1); }
+/* Planejamento por períodos e quantidade real de vídeos por dia */
+.storage-warning {
+  margin: -10px 0 22px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255,174,87,.3);
+  border-radius: 13px;
+  color: #f2d4ad;
+  background: rgba(255,174,87,.07);
+  font-size: 11px;
+  line-height: 1.5;
+}
+.plan-total-card {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  margin: 18px 0 9px;
+  padding: 14px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(155,77,255,.17), rgba(155,77,255,.055));
+}
+.plan-total-card strong { font-size: 19px; }
+.plan-total-card span { color: var(--muted); font-size: 10px; }
+.period-count-badge {
+  width: fit-content;
+  margin-bottom: 13px;
+  padding: 5px 9px;
+  border: 1px solid rgba(155,77,255,.25);
+  border-radius: 999px;
+  color: #dac9ec;
+  background: rgba(155,77,255,.065);
+  font-size: 8px;
+  font-weight: 800;
+}
+.plan-summary-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.plan-summary-grid > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255,255,255,.022);
+}
+.plan-summary-grid span { color: var(--muted); font-size: 7px; letter-spacing: .7px; }
+.plan-summary-grid strong { overflow: hidden; text-overflow: ellipsis; font-size: 9px; }
+.union-summary {
+  margin: 0 0 12px;
+  padding: 8px 10px;
+  border: 1px solid rgba(155,77,255,.2);
+  border-radius: 10px;
+  color: #bbaacb;
+  background: rgba(155,77,255,.045);
+  font-size: 8px;
+  line-height: 1.45;
+}
+.union-summary b { color: #f0e4ff; }
+.date-item { min-width: 0; }
+.date-item > div { min-width: 0; flex: 1; }
+.date-item.published { border-color: rgba(86,227,159,.35); background: rgba(86,227,159,.065); }
+.date-item.today { border-color: rgba(195,74,255,.85); background: linear-gradient(135deg, rgba(182,37,255,.34), rgba(82,18,118,.26)); box-shadow: 0 0 0 1px rgba(229,170,255,.13); }
+.date-item.published > span { background: rgba(86,227,159,.18); }
+.date-item.today > span { background: linear-gradient(135deg, #c42eff, #7d1bc0); }
+.videos-day-badge {
+  flex: 0 0 auto;
+  padding: 5px 7px;
+  border-radius: 999px;
+  color: #ddd0e9;
+  background: rgba(255,255,255,.045);
+  font-size: 7px;
+  white-space: nowrap;
+}
+.date-item.today .videos-day-badge { color: white; background: rgba(255,255,255,.1); }
+.schedule-empty {
+  display: grid;
+  place-items: center;
+  gap: 5px;
+  min-height: 130px;
+  margin: 12px 0;
+  padding: 18px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 13px;
+  color: var(--muted);
+  text-align: center;
+}
+.schedule-empty > span { font-size: 28px; }
+.schedule-empty strong { color: var(--silver); font-size: 11px; }
+.schedule-empty small { font-size: 8px; }
 
-.modal-dialog.periods-dialog { width: min(980px, 100%); }
-.period-rule-explanation { margin-bottom: 14px; padding: 13px 15px; border: 1px solid rgba(155,77,255,.26); border-radius: 14px; background: linear-gradient(135deg, rgba(155,77,255,.11), rgba(255,255,255,.018)); }
-.period-rule-explanation strong { font-size: 12px; }
-.period-rule-explanation p { margin: 5px 0 0; color: var(--muted); font-size: 10px; line-height: 1.55; }
-.period-rule-explanation b { color: var(--purple-2); }
-.periods-list { display: grid; gap: 12px; }
-.period-editor-card { padding: 14px; border: 1px solid var(--line); border-radius: 16px; background: rgba(0,0,0,.14); }
-.period-editor-card.new-period-card { margin-top: 14px; border-color: rgba(155,77,255,.34); background: rgba(155,77,255,.045); }
-.period-editor-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-.period-editor-head > div { display: grid; gap: 3px; }
-.period-editor-head span { color: var(--purple-2); font-size: 8px; font-weight: 900; letter-spacing: .1em; }
-.period-editor-head strong { font-size: 13px; }
-.period-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
-.period-form .span-2 { grid-column: span 2; }
-.period-form-actions { display: flex; justify-content: flex-end; padding-top: 2px; }
-.videos-per-day-field { padding: 10px; border: 1px solid rgba(155,77,255,.28); border-radius: 13px; background: rgba(155,77,255,.055); }
-.videos-per-day-field > small { margin-top: 6px; color: var(--muted); font-size: 8px; line-height: 1.45; }
-.settings-period-shortcut { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 13px; border: 1px solid rgba(155,77,255,.25); border-radius: 14px; background: rgba(155,77,255,.05); }
-.settings-period-shortcut > div { display: grid; gap: 4px; }
-.settings-period-shortcut strong { font-size: 12px; }
-.settings-period-shortcut span { color: var(--muted); font-size: 9px; }
+.modal-dialog.periods-dialog { width: min(920px, 100%); }
+.period-rule-note {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid rgba(155,77,255,.25);
+  border-radius: 13px;
+  background: rgba(155,77,255,.055);
+}
+.period-rule-note strong { font-size: 11px; }
+.period-rule-note span { color: var(--muted); font-size: 9px; line-height: 1.5; }
+.new-period-card, .period-editor-card {
+  position: relative;
+  padding: 15px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(0,0,0,.14);
+}
+.new-period-card { margin-bottom: 14px; border-color: rgba(155,77,255,.3); background: rgba(155,77,255,.035); }
+.period-list { display: grid; gap: 12px; }
+.period-card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.period-card-head small { color: var(--purple-2); font-size: 8px; font-weight: 900; letter-spacing: 1px; }
+.period-card-head h3 { margin: 3px 0 0; font-size: 14px; }
+.period-card-head > span { color: var(--purple-2); font-weight: 900; }
+.period-daily-pill {
+  padding: 6px 9px;
+  border: 1px solid rgba(155,77,255,.24);
+  border-radius: 999px;
+  color: #ddc8f3 !important;
+  background: rgba(155,77,255,.08);
+  font-size: 8px;
+  white-space: nowrap;
+}
+.period-form { padding-top: 2px; }
+.videos-per-day-field small { color: var(--muted); font-size: 8px; line-height: 1.4; }
+.period-form-actions { display: flex; justify-content: flex-end; }
+.period-delete-form { display: flex; justify-content: flex-end; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
 
-@media (max-width: 700px) {
-  .period-form { grid-template-columns: 1fr; }
-  .period-form .span-2 { grid-column: span 1; }
-  .settings-period-shortcut { align-items: stretch; flex-direction: column; }
-  .schedule-period-summary { grid-template-columns: 1fr; }
+@media (max-width: 640px) {
+  .plan-summary-grid { grid-template-columns: 1fr; }
+  .plan-total-card { align-items: flex-start; flex-direction: column; }
+  .date-item { gap: 7px; padding: 8px; }
+  .videos-day-badge { padding: 4px 6px; }
+  .period-card-head { align-items: flex-start; }
+  .period-daily-pill { max-width: 130px; white-space: normal; text-align: center; }
 }

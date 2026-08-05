@@ -1,5 +1,5 @@
 {% extends 'base.html' %}
-{% block title %}DS-PLANNERX{% endblock %}
+{% block title %}{{ video.title }} — DS - PLANNERX{% endblock %}
 {% block page_title %}Card de produção{% endblock %}
 {% block topbar_actions %}
 <a class="btn btn-ghost" href="{{ url_for('channel_detail', channel_id=video.channel_id) }}">← Voltar ao canal</a>
@@ -9,28 +9,20 @@
 <section class="video-detail-header">
   <div class="video-detail-identity">
     <div class="video-detail-thumb {% if video.cover_image_path %}with-image{% endif %}">
-      {% if video.cover_image_path %}<img src="{{ video.cover_image_path|asset_url }}" alt="Capa de {{ video.title }}">{% else %}<span>🖼️</span>{% endif %}
+      {% if video.cover_image_path %}<img src="{{ media_url(video.cover_image_path) }}" alt="Capa de {{ video.title }}">{% else %}<span>🖼️</span>{% endif %}
     </div>
-    <div class="video-detail-title"><span class="status-chip {{ video.status }}">{{ '✅' if video.status == 'completed' else '🎬' }} {{ status_labels[video.status] }}</span><h2>{{ video.title }}</h2><p>Canal: <strong>{{ video.channel_name }}</strong></p></div>
+    <div class="video-detail-title"><span class="status-chip {{ video.status }}">{{ '✅' if video.status == 'completed' else ('🎬' if video.status == 'production' else '📝') }} {{ status_labels[video.status] }}</span><h2>{{ video.title }}</h2><p>Canal: <strong>{{ video.channel_name }}</strong></p></div>
   </div>
-  <div class="video-header-actions">
-    <button class="script-ready-toggle detail-toggle {% if video.script_completed_at %}ready{% endif %}" type="button" data-script-ready data-video-id="{{ video.id }}" data-ready="{{ 'true' if video.script_completed_at else 'false' }}" title="Marcar ou desmarcar o roteiro como pronto">
-      <span>{{ '✅' if video.script_completed_at else '📜' }}</span><b>{{ 'Roteiro pronto' if video.script_completed_at else 'Marcar roteiro pronto' }}</b>
-    </button>
-    <button class="published-toggle detail-toggle {% if video.published_at %}published{% endif %}" type="button" data-published-toggle data-video-id="{{ video.id }}" data-published="{{ 'true' if video.published_at else 'false' }}">
-      <span>{{ '🟢' if video.published_at else '📡' }}</span><b>{{ 'Publicado' if video.published_at else 'Marcar publicado' }}</b>
-    </button>
-    <div class="planned-date-box"><span>📅 Publicação planejada</span><strong>{{ video.planned_date|date_br if video.planned_date else 'Não definida' }}</strong></div>
-  </div>
+  <div class="planned-date-box"><span>📅 Publicação planejada</span><strong>{{ video.planned_date|date_br if video.planned_date else 'Não definida' }}</strong></div>
 </section>
 
 <section class="detail-layout">
   <div class="detail-main">
     <section class="content-panel">
       <div class="panel-heading"><div><span class="eyebrow">INFORMAÇÕES</span><h3>Detalhes do vídeo</h3></div><span class="panel-emoji">🧩</span></div>
-      <form action="{{ url_for('edit_video', video_id=video.id) }}" method="post" enctype="multipart/form-data" class="form-grid" data-cloud-upload-form>
+      <form action="{{ url_for('edit_video', video_id=video.id) }}" method="post" enctype="multipart/form-data" class="form-grid">
         <label class="field span-2"><span>Título</span><input name="title" value="{{ video.title }}" required></label>
-        <label class="field"><span>Status</span><select name="status"><option value="production" {% if video.status == 'production' %}selected{% endif %}>🎬 Em produção</option><option value="completed" {% if video.status == 'completed' %}selected{% endif %}>✅ Concluído</option></select></label>
+        <label class="field"><span>Status</span><select name="status"><option value="todo" {% if video.status == 'todo' %}selected{% endif %}>📝 Pra fazer</option><option value="production" {% if video.status == 'production' %}selected{% endif %}>🎬 Em produção</option><option value="completed" {% if video.status == 'completed' %}selected{% endif %}>✅ Concluído</option></select></label>
         <label class="field"><span>Data planejada</span><input type="date" name="planned_date" value="{{ video.planned_date or '' }}"></label>
         <label class="field span-2"><span>Descrição / briefing</span><textarea name="description" rows="6" placeholder="Tema, gancho, direcionamento, observações...">{{ video.description }}</textarea></label>
         <div class="field span-2">
@@ -39,7 +31,7 @@
             <label class="cover-picker" for="editVideoCover">
               <input id="editVideoCover" type="file" name="cover_image" accept="image/*" data-image-preview-input data-preview-target="editVideoCoverPreview">
               <div class="cover-picker-preview {% if video.cover_image_path %}has-preview{% endif %}" id="editVideoCoverPreview">
-                <img data-preview-image alt="Prévia da capa" {% if video.cover_image_path %}src="{{ video.cover_image_path|asset_url }}"{% endif %}>
+                <img data-preview-image alt="Prévia da capa" {% if video.cover_image_path %}src="{{ media_url(video.cover_image_path) }}"{% endif %}>
                 <div class="cover-picker-empty" data-preview-empty {% if video.cover_image_path %}hidden{% endif %}><span>🖼️</span><strong>Selecionar foto de capa</strong><small>JPG, PNG, WEBP ou GIF</small></div>
                 <div class="cover-picker-action">📷 {{ 'Trocar imagem' if video.cover_image_path else 'Escolher imagem' }}</div>
               </div>
@@ -79,24 +71,21 @@
   <aside class="detail-side">
     <section class="content-panel sticky-panel">
       <div class="panel-heading"><div><span class="eyebrow">ARQUIVOS</span><h3>Anexos do vídeo</h3></div><span class="panel-emoji">📎</span></div>
-      <form action="{{ url_for('upload_attachments', video_id=video.id) }}" method="post" enctype="multipart/form-data" class="upload-zone" data-cloud-upload-form>
+      <form action="{{ url_for('upload_attachments', video_id=video.id) }}" method="post" enctype="multipart/form-data" class="upload-zone">
         <input id="files" type="file" name="files" multiple accept="video/*,audio/*,image/*,.txt,.md,.srt,.pdf" required>
         <label for="files"><span class="upload-emoji">☁️</span><strong>Selecionar arquivos</strong><small>Vídeo, áudio, imagem, TXT, SRT ou PDF</small></label>
         <div class="selected-files" data-selected-files>Nenhum arquivo selecionado</div>
         <button class="btn btn-primary full" type="submit">⬆️ Anexar arquivos</button>
       </form>
 
-      {% if attachments %}<p class="attachment-download-hint">⬇️ Use o botão de download para obter o arquivo original, sem conversão de texto.</p><div class="attachment-list">
+      {% if attachments %}<div class="attachment-list">
         {% for item in attachments %}
         <article class="attachment-card">
-          <a href="{{ item.stored_name|asset_url }}" target="_blank" rel="noopener" class="attachment-main" title="Abrir visualização do arquivo">
+          <a href="{{ media_url(item.stored_name) }}" target="_blank" class="attachment-main">
             <span class="attachment-icon">{{ {'video':'🎥','audio':'🎧','image':'🖼️','pdf':'📕','text':'📄'}[item.file_type] }}</span>
             <div><strong title="{{ item.original_name }}">{{ item.original_name }}</strong><small>{{ item.file_type|upper }} · {{ item.size_bytes|filesize }}</small></div>
           </a>
-          <div class="attachment-actions">
-            <a href="{{ item.stored_name|download_url }}" download="{{ item.original_name }}" class="icon-button download" aria-label="Baixar arquivo original" title="Baixar arquivo original">⬇</a>
-            <form action="{{ url_for('delete_attachment', attachment_id=item.id) }}" method="post" data-confirm="Excluir este anexo?"><button type="submit" class="icon-button danger" aria-label="Excluir anexo" title="Excluir anexo">✕</button></form>
-          </div>
+          <form action="{{ url_for('delete_attachment', attachment_id=item.id) }}" method="post" data-confirm="Excluir este anexo?"><button type="submit" class="icon-button danger">✕</button></form>
         </article>
         {% endfor %}
       </div>{% else %}<div class="mini-empty">📂 Ainda não há arquivos anexados neste card.</div>{% endif %}

@@ -11,7 +11,7 @@
 <section class="channel-hero">
   <div class="hero-identity">
     <div class="hero-avatar {% if channel.image_path %}with-image{% endif %}"
-      {% if channel.image_path %}style="background-image:url('{{ url_for('uploaded_file', filename=channel.image_path) }}')"{% endif %}>
+      {% if channel.image_path %}style="background-image:url('{{ media_url(channel.image_path) }}')"{% endif %}>
       {% if not channel.image_path %}{{ channel.name[0]|upper }}{% endif %}
     </div>
     <div><span class="eyebrow">PLANEJAMENTO DO CANAL</span><h2>{{ channel.name }}</h2><p>{{ channel.description or 'Adicione uma descrição nas configurações do canal.' }}</p></div>
@@ -58,7 +58,7 @@
         <a href="{{ url_for('video_detail', video_id=video.id) }}" class="video-card-link">
           <div class="video-cover">
             {% if video.cover_image_path %}
-            <img src="{{ url_for('uploaded_file', filename=video.cover_image_path) }}" alt="Capa de {{ video.title }}" loading="lazy">
+            <img src="{{ media_url(video.cover_image_path) }}" alt="Capa de {{ video.title }}" loading="lazy">
             {% else %}
             <div class="video-cover-placeholder"><span>🖼️</span><small>Adicionar foto de capa</small></div>
             {% endif %}
@@ -92,23 +92,46 @@
   <aside class="planner-sidebar">
     <section class="side-panel schedule-panel">
       <div class="panel-title"><span>🗓️</span><div><small>RITMO DE POSTAGEM</small><h3>Próximas publicações</h3></div></div>
-      <div class="frequency-highlight schedule-total"><strong>{{ projection.count }} vídeo{{ 's' if projection.count != 1 else '' }}</strong><span>planejado{{ 's' if projection.count != 1 else '' }} para {{ projection.period_label }}</span></div>
-      <div class="frequency-rule-badge multi">🧩 {{ projection.period_count }} período{{ 's' if projection.period_count != 1 else '' }} · datas sobrepostas não são somadas</div>
-      <div class="schedule-period-summary">
-        <div><small>PERÍODO</small><strong>{{ projection.period_start|date_br }} até {{ projection.period_end|date_br }}</strong></div>
-        <div><small>DATAS ÚNICAS</small><strong>{{ projection.date_count }}</strong></div>
+
+      <div class="plan-total-card">
+        <strong>{{ plan.total_videos }} vídeo{{ 's' if plan.total_videos != 1 else '' }}</strong>
+        <span>planejado{{ 's' if plan.total_videos != 1 else '' }} para {{ plan.label }}</span>
       </div>
-      <div class="schedule-union-note">🧮 {{ projection.date_count }} data{{ 's' if projection.date_count != 1 else '' }} = <strong>{{ projection.count }} vídeo{{ 's' if projection.count != 1 else '' }}</strong>, conforme “vídeos por dia”</div>
+      <div class="period-count-badge">🧩 {{ plan.period_count }} período{{ 's' if plan.period_count != 1 else '' }} configurado{{ 's' if plan.period_count != 1 else '' }}</div>
+
+      {% if plan.period_start and plan.period_end %}
+      <div class="plan-summary-grid">
+        <div><span>PERÍODO</span><strong>{{ plan.label }}</strong></div>
+        <div><span>DURAÇÃO</span><strong>{{ plan.duration_days }} dias</strong></div>
+      </div>
+      <div class="month-estimate">
+        <span>{{ plan.period_start|date_br }} até {{ plan.period_end|date_br }}</span>
+        <strong>{{ plan.total_videos }} vídeos</strong>
+      </div>
+      <div class="union-summary">
+        🧮 União de {{ plan.period_count }} período{{ 's' if plan.period_count != 1 else '' }}, sem repetir datas
+        ({{ plan.unique_dates }} data{{ 's' if plan.unique_dates != 1 else '' }}) = <b>{{ plan.total_videos }} vídeos</b>
+      </div>
+      {% endif %}
+
+      {% if plan['items'] %}
       <div class="date-list">
-        {% for item in upcoming %}
-        <div class="date-item schedule-date {{ item.status_class }}">
+        {% for item in plan['items'] %}
+        <div class="date-item {{ item.status }}">
           <span>{{ item.date.strftime('%d') }}</span>
-          <div><strong>{{ item.date.strftime('%d/%m/%Y') }}</strong><small>{{ item.status_text }}</small></div>
-          <b class="daily-video-badge">{{ item.videos_per_day }} vídeo{{ 's' if item.videos_per_day != 1 else '' }}</b>
+          <div>
+            <strong>{{ item.date.strftime('%d/%m/%Y') }}</strong>
+            <small>{{ item.label }}</small>
+          </div>
+          <b class="videos-day-badge">{{ item.videos }} vídeo{{ 's' if item.videos != 1 else '' }}</b>
         </div>
         {% endfor %}
       </div>
-      <button class="btn btn-secondary full" type="button" data-open-modal="periodsModal">⚙️ Ajustar períodos e vídeos por dia</button>
+      {% else %}
+      <div class="schedule-empty"><span>📭</span><strong>Nenhuma data calculada</strong><small>Adicione um período de postagem.</small></div>
+      {% endif %}
+
+      <button class="btn btn-secondary full" type="button" data-open-modal="periodsModal">⚙️ Ajustar frequência</button>
     </section>
 
     <section class="side-panel title-panel">
@@ -201,35 +224,51 @@
       <div><span class="eyebrow">RITMO DE POSTAGEM</span><h2>Períodos e vídeos por dia</h2></div>
       <button class="icon-button" type="button" data-close-modal>✕</button>
     </div>
-    <div class="period-rule-explanation">
-      <strong>Como o cálculo funciona</strong>
-      <p>Cada data aparece somente uma vez. Quando dois períodos caem no mesmo dia, eles não geram dois vídeos automaticamente. A quantidade é definida pelo campo <b>Vídeos por dia</b>; em sobreposições, vale o maior número informado.</p>
+
+    <div class="period-rule-note">
+      <strong>Como funciona a sobreposição?</strong>
+      <span>A mesma data aparece uma única vez. Quando dois períodos coincidem, vale a maior quantidade de vídeos por dia configurada.</span>
     </div>
 
-    <div class="periods-list">
+    <section class="new-period-card">
+      <div class="period-card-head"><div><small>NOVO PERÍODO</small><h3>Adicionar regra de postagem</h3></div><span>＋</span></div>
+      <form action="{{ url_for('create_posting_period', channel_id=channel.id) }}" method="post" class="form-grid period-form">
+        <label class="field span-2"><span>Nome do período</span><input name="name" value="Novo período" maxlength="120" required></label>
+        <label class="field"><span>Data inicial</span><input type="date" name="start_date" value="{{ new_period_start }}" required></label>
+        <label class="field"><span>Data final</span><input type="date" name="end_date" value="{{ new_period_end }}" required></label>
+        <div class="field span-2 frequency-config" data-frequency-config>
+          <span>Como contar a frequência?</span>
+          <div class="frequency-mode-options">
+            <label class="frequency-mode-option"><input type="radio" name="frequency_mode" value="interval" checked><span><b>📆 Intervalo entre postagens</b><small>Ex.: 27, 29, 31.</small></span></label>
+            <label class="frequency-mode-option"><input type="radio" name="frequency_mode" value="days_off"><span><b>⏸️ Dias completos sem postar</b><small>Ex.: 27, 30, 02.</small></span></label>
+          </div>
+        </div>
+        <label class="field" data-frequency-value-field>
+          <span data-frequency-value-label>Publicar a cada quantos dias?</span>
+          <div class="input-suffix"><input type="number" name="interval_days" min="1" value="2" required><span data-frequency-value-suffix>dias entre postagens</span></div>
+          <small class="frequency-help" data-frequency-help></small>
+        </label>
+        <label class="field videos-per-day-field"><span>Vídeos por dia</span><div class="input-suffix"><input type="number" name="videos_per_day" min="1" max="50" value="1" required><span>vídeo(s)</span></div><small>Quantidade real publicada em cada data.</small></label>
+        <div class="modal-actions span-2"><button type="submit" class="btn btn-primary">＋ Adicionar período</button></div>
+      </form>
+    </section>
+
+    <div class="period-list">
       {% for period in periods %}
       <article class="period-editor-card">
-        <div class="period-editor-head">
-          <div><span>PERÍODO {{ loop.index }}</span><strong>{{ period.name }}</strong></div>
-          <form action="{{ url_for('delete_posting_period', period_id=period.id) }}" method="post" data-confirm="Excluir este período? As outras datas permanecerão no planejamento.">
-            <button class="icon-button danger" type="submit" title="Excluir período">🗑️</button>
-          </form>
+        <div class="period-card-head">
+          <div><small>PERÍODO {{ loop.index }}</small><h3>{{ period.name }}</h3></div>
+          <span class="period-daily-pill">{{ period.videos_per_day }} vídeo{{ 's' if period.videos_per_day != 1 else '' }}/dia</span>
         </div>
-        <form action="{{ url_for('edit_posting_period', period_id=period.id) }}" method="post" class="period-form" data-frequency-config>
-          <label class="field span-2"><span>Nome do período</span><input name="name" value="{{ period.name }}" maxlength="100"></label>
-          <label class="field"><span>Data inicial</span><input type="date" name="start_date" value="{{ period.start_date }}" required></label>
-          <label class="field"><span>Data final</span><input type="date" name="end_date" value="{{ period.end_date }}" required></label>
-          <div class="field span-2 frequency-config">
-            <span>Tipo de frequência</span>
+        <form action="{{ url_for('edit_posting_period', period_id=period.id) }}" method="post" class="form-grid period-form">
+          <label class="field span-2"><span>Nome do período</span><input name="name" value="{{ period.name }}" maxlength="120" required></label>
+          <label class="field"><span>Data inicial</span><input type="date" name="start_date" value="{{ period.start_date.isoformat() }}" required></label>
+          <label class="field"><span>Data final</span><input type="date" name="end_date" value="{{ period.end_date.isoformat() }}" required></label>
+          <div class="field span-2 frequency-config" data-frequency-config>
+            <span>Como contar a frequência?</span>
             <div class="frequency-mode-options">
-              <label class="frequency-mode-option">
-                <input type="radio" name="frequency_mode" value="interval" {% if period.frequency_mode == 'interval' %}checked{% endif %}>
-                <span><b>📆 Intervalo entre postagens</b><small>Ex.: 03, 05, 07 — a cada 2 dias.</small></span>
-              </label>
-              <label class="frequency-mode-option">
-                <input type="radio" name="frequency_mode" value="days_off" {% if period.frequency_mode == 'days_off' %}checked{% endif %}>
-                <span><b>⏸️ Dias completos sem postar</b><small>Ex.: 03, 06, 09 — dois dias inteiros de pausa.</small></span>
-              </label>
+              <label class="frequency-mode-option"><input type="radio" name="frequency_mode" value="interval" {% if period.frequency_mode == 'interval' %}checked{% endif %}><span><b>📆 Intervalo entre postagens</b><small>Ex.: 27, 29, 31.</small></span></label>
+              <label class="frequency-mode-option"><input type="radio" name="frequency_mode" value="days_off" {% if period.frequency_mode == 'days_off' %}checked{% endif %}><span><b>⏸️ Dias completos sem postar</b><small>Ex.: 27, 30, 02.</small></span></label>
             </div>
           </div>
           <label class="field" data-frequency-value-field>
@@ -237,42 +276,17 @@
             <div class="input-suffix"><input type="number" name="interval_days" min="{{ 0 if period.frequency_mode == 'days_off' else 1 }}" value="{{ period.interval_days }}" required><span data-frequency-value-suffix>{{ 'dias sem postar' if period.frequency_mode == 'days_off' else 'dias entre postagens' }}</span></div>
             <small class="frequency-help" data-frequency-help></small>
           </label>
-          <label class="field videos-per-day-field">
-            <span>Vídeos por dia</span>
-            <div class="input-suffix"><input type="number" name="videos_per_day" min="1" max="50" value="{{ period.videos_per_day or 1 }}" required><span>vídeo(s) em cada data</span></div>
-            <small>Esse número define a quantidade real. Uma sobreposição de períodos não aumenta sozinha o total.</small>
-          </label>
-          <div class="period-form-actions span-2"><button class="btn btn-secondary" type="submit">💾 Salvar este período</button></div>
+          <label class="field videos-per-day-field"><span>Vídeos por dia</span><div class="input-suffix"><input type="number" name="videos_per_day" min="1" max="50" value="{{ period.videos_per_day }}" required><span>vídeo(s)</span></div><small>Use 2 apenas quando realmente publicar dois vídeos na mesma data.</small></label>
+          <div class="period-form-actions span-2"><button type="submit" class="btn btn-secondary">💾 Salvar período</button></div>
+        </form>
+        <form action="{{ url_for('delete_posting_period', period_id=period.id) }}" method="post" data-confirm="Excluir este período de postagem?" class="period-delete-form">
+          <button type="submit" class="btn btn-danger btn-small">🗑️ Excluir período</button>
         </form>
       </article>
+      {% else %}
+      <div class="schedule-empty"><span>🧩</span><strong>Nenhum período cadastrado</strong><small>Use o formulário acima para adicionar o primeiro.</small></div>
       {% endfor %}
     </div>
-
-    <article class="period-editor-card new-period-card">
-      <div class="period-editor-head"><div><span>NOVO PERÍODO</span><strong>Adicionar outra regra de postagem</strong></div></div>
-      <form action="{{ url_for('create_posting_period', channel_id=channel.id) }}" method="post" class="period-form" data-frequency-config>
-        <label class="field span-2"><span>Nome do período</span><input name="name" placeholder="Ex.: Segunda etapa de agosto" maxlength="100"></label>
-        <label class="field"><span>Data inicial</span><input type="date" name="start_date" value="{{ projection.period_start }}" required></label>
-        <label class="field"><span>Data final</span><input type="date" name="end_date" value="{{ projection.period_end }}" required></label>
-        <div class="field span-2 frequency-config">
-          <span>Tipo de frequência</span>
-          <div class="frequency-mode-options">
-            <label class="frequency-mode-option"><input type="radio" name="frequency_mode" value="interval" checked><span><b>📆 Intervalo entre postagens</b><small>A distância é contada entre as datas.</small></span></label>
-            <label class="frequency-mode-option"><input type="radio" name="frequency_mode" value="days_off"><span><b>⏸️ Dias completos sem postar</b><small>Conta dias inteiros de pausa.</small></span></label>
-          </div>
-        </div>
-        <label class="field" data-frequency-value-field>
-          <span data-frequency-value-label>Publicar a cada quantos dias?</span>
-          <div class="input-suffix"><input type="number" name="interval_days" min="1" value="1" required><span data-frequency-value-suffix>dias entre postagens</span></div>
-          <small class="frequency-help" data-frequency-help></small>
-        </label>
-        <label class="field videos-per-day-field">
-          <span>Vídeos por dia</span>
-          <div class="input-suffix"><input type="number" name="videos_per_day" min="1" max="50" value="1" required><span>vídeo(s) em cada data</span></div>
-        </label>
-        <div class="period-form-actions span-2"><button class="btn btn-primary" type="submit">＋ Adicionar período</button></div>
-      </form>
-    </article>
   </div>
 </div>
 
@@ -285,10 +299,6 @@
       <label class="field span-2"><span>Descrição</span><textarea name="description" rows="3">{{ channel.description }}</textarea></label>
       <label class="field"><span>Meta de títulos/vídeos</span><input type="number" name="title_goal" min="1" value="{{ channel.title_goal }}" required></label>
       <label class="field file-field"><span>Trocar imagem</span><input type="file" name="image" accept="image/*"></label>
-      <input type="hidden" name="interval_days" value="{{ channel.interval_days }}">
-      <input type="hidden" name="frequency_mode" value="{{ channel.frequency_mode }}">
-      <input type="hidden" name="start_date" value="{{ channel.start_date }}">
-      <div class="settings-period-shortcut span-2"><div><strong>Ritmo e calendário</strong><span>Agora são configurados por períodos, incluindo a quantidade exata de vídeos por dia.</span></div><button type="button" class="btn btn-secondary" data-open-modal="periodsModal">🗓️ Abrir períodos</button></div>
       <div class="modal-actions span-2"><button type="button" class="btn btn-ghost" data-close-modal>Cancelar</button><button type="submit" class="btn btn-primary">💾 Salvar alterações</button></div>
     </form>
     <form action="{{ url_for('delete_channel', channel_id=channel.id) }}" method="post" class="danger-zone" data-confirm="Excluir este canal e todos os seus cards e arquivos?">

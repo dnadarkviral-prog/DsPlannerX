@@ -16,11 +16,7 @@
   };
 
   document.querySelectorAll('[data-open-modal]').forEach((button) => {
-    button.addEventListener('click', () => {
-      const currentModal = button.closest('.modal.open');
-      if (currentModal) closeModal(currentModal);
-      openModal(button.dataset.openModal);
-    });
+    button.addEventListener('click', () => openModal(button.dataset.openModal));
   });
   document.querySelectorAll('[data-close-modal]').forEach((button) => {
     button.addEventListener('click', () => closeModal(button.closest('.modal')));
