@@ -112,3 +112,12 @@ Esta edição usa exatamente a estrutura de banco da versão estável v2.3.1. O 
 - A meta diária só existe quando a data de hoje foi criada no Fluxo.
 - Cards ficam sempre em ordem crescente de data.
 - O filtro único inclui: Todos os status, Em produção, Concluídos e Roteiro pronto.
+
+## v2.6.2 — marcos da meta diária
+
+- Remove o card explicativo de etiquetas do Fluxo de Produção.
+- Mantém as etiquetas de resultado apenas na lógica e nas barras de cada data.
+- Exibe mensagem variada ao alcançar 50% da meta diária, sempre com emoji de carinha.
+- Exibe mensagem variada ao alcançar 100% da meta diária, sempre com troféu.
+- Evita repetir consecutivamente a mesma frase durante a sessão.
+- A meta diária continua sendo calculada exclusivamente pelos registros do Fluxo da data de hoje.

@@ -1161,16 +1161,24 @@ def custom_plans_payload(db: Any, channel_id: int) -> list[dict[str, Any]]:
 
 CELEBRATION_MESSAGES = {
     "daily_half": [
-        "Você chegou a 50% da meta do dia. Continue: a parte mais difícil já ficou para trás!",
-        "Metade da meta concluída! Não diminua o ritmo agora — o troféu já está logo ali.",
-        "50% alcançado. A produção engrenou e agora falta menos do que já foi feito!",
-        "Meio caminho vencido! Continue firme porque a meta já começou a perder a discussão.",
+        "Metade da meta concluída! Continue assim: falta menos do que você já venceu hoje.",
+        "Você chegou aos 50%! O ritmo está funcionando — agora é só manter a produção andando.",
+        "Meio caminho já foi. Respira, organiza o próximo passo e continua porque está quase lá!",
+        "50% alcançado! A meta já percebeu que hoje não vai escapar de você.",
+        "A metade ficou para trás! Continue firme, porque o resultado do dia já começou a aparecer.",
+        "Você chegou no meio da jornada de hoje. Mais um pouco e a comemoração vem com troféu!",
+        "Metade concluída! A produção engrenou e agora cada novo registro aproxima você da vitória.",
+        "50% feito! Nada de desacelerar agora: você está exatamente no caminho certo.",
     ],
     "daily_full": [
         "Meta diária batida! Roteiros e vídeos registrados com sucesso. Hoje o troféu é seu!",
         "100% da meta do dia concluída! A procrastinação perdeu e a produção levou o troféu.",
         "Missão do dia cumprida! Pode comemorar: a meta foi alcançada por completo.",
         "Meta batida com excelência! Hoje até a lista de tarefas ficou sem argumento.",
+        "Objetivo do dia concluído! O PlannerX confirma: você mereceu esse troféu.",
+        "Meta alcançada! Tudo que precisava ser registrado hoje foi concluído com sucesso.",
+        "Dia produtivo confirmado! A meta chegou aos 100% e o troféu já tem dona.",
+        "Você fechou a meta diária! Produção completa, missão cumprida e troféu garantido.",
     ],
     "general": [
         "Meta geral alcançada! O PlannerX oficialmente ficou pequeno para esse ritmo.",
@@ -1179,18 +1187,43 @@ CELEBRATION_MESSAGES = {
     ],
 }
 
+HALF_PROGRESS_EMOJIS = ["😊", "😄", "🙂", "🥳", "😉", "🤗", "😎", "😁"]
 
-def celebration_payload(kind: str | None) -> dict[str, str] | None:
+
+def celebration_payload(kind: str | None, request: Request | None = None) -> dict[str, str] | None:
+    """Cria a mensagem de marco sem repetir consecutivamente na mesma sessão.
+
+    A meta de 50% sempre usa uma carinha. A meta concluída sempre usa troféu.
+    """
     if kind not in CELEBRATION_MESSAGES:
         return None
     messages = CELEBRATION_MESSAGES[kind]
-    index = (today_local().toordinal() + int(time.time())) % len(messages)
+    if not messages:
+        return None
+
+    last_index = -1
+    session_key = f"celebration_last_{kind}"
+    if request is not None:
+        try:
+            last_index = int(request.session.get(session_key, -1))
+        except (TypeError, ValueError):
+            last_index = -1
+
+    if len(messages) == 1:
+        index = 0
+    else:
+        choices = [item for item in range(len(messages)) if item != last_index]
+        index = secrets.choice(choices)
+
+    if request is not None:
+        request.session[session_key] = index
+
     if kind == "daily_half":
         return {
             "kind": kind,
             "title": "META DIÁRIA EM 50%",
             "message": messages[index],
-            "emoji": "🔥",
+            "emoji": HALF_PROGRESS_EMOJIS[index % len(HALF_PROGRESS_EMOJIS)],
         }
     if kind == "daily_full":
         return {
@@ -1591,7 +1624,7 @@ def template_context(request: Request, **kwargs: Any) -> dict[str, Any]:
         "active_endpoint": active_endpoint,
         "current_user": request.session.get("username", ""),
         "cloud_upload_enabled": CLOUD_UPLOAD_ENABLED,
-        "celebration": celebration_payload(request.query_params.get("celebrate")),
+        "celebration": celebration_payload(request.query_params.get("celebrate"), request),
         **kwargs,
     }
 
@@ -1627,7 +1660,7 @@ def health():
         "ok": not CONFIG_ERRORS,
         "database": "postgres" if USE_POSTGRES else "sqlite",
         "storage": "vercel-blob" if BLOB_ENABLED else "local",
-        "version": "2.5-unified-month-workspace",
+        "version": "2.6.2-flow-milestones",
     }
 
 
@@ -2208,7 +2241,7 @@ async def api_video_status(request: Request, video_id: int):
             bool(before_stats["completed"] >= before_stats["goal"]),
             bool(stats["completed"] >= stats["goal"]),
         )
-    return {"ok": True, "label": STATUS_LABELS[status], "stats": stats, "celebration": celebration_payload(celebrate_kind)}
+    return {"ok": True, "label": STATUS_LABELS[status], "stats": stats, "celebration": celebration_payload(celebrate_kind, request)}
 
 
 @app.post("/api/videos/{video_id}/script-ready", name="api_video_script_ready")
