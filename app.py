@@ -1346,17 +1346,24 @@ def custom_month_projection(db: Any, channel_id: int, year_month: str) -> dict[s
     }
 
 
-def daily_goal_values(db: Any, channel: Any, target_date: date) -> tuple[int, int]:
-    """Retorna a meta específica da data; usa a meta padrão do canal como fallback."""
+def daily_goal_values(db: Any, channel: Any, target_date: date) -> tuple[int, int, bool]:
+    """Retorna a meta da data e informa se ela foi criada manualmente no Fluxo."""
     row = db.execute(
         "SELECT script_goal, video_goal FROM daily_goal_settings WHERE channel_id = ? AND goal_date = ?",
         (channel["id"], target_date.isoformat()),
     ).fetchone()
     if row is not None:
-        return max(1, int(row["script_goal"] or 1)), max(1, int(row["video_goal"] or 1))
+        return (
+            max(1, int(row["script_goal"] or 1)),
+            max(1, int(row["video_goal"] or 1)),
+            True,
+        )
+    # Mantém os valores padrão apenas como sugestão para o formulário. A data só
+    # passa a valer como meta quando o usuário a cria manualmente no Fluxo.
     return (
         max(1, int(channel["daily_script_goal"] or 1)),
         max(1, int(channel["daily_video_goal"] or 1)),
+        False,
     )
 
 
@@ -1389,7 +1396,7 @@ def daily_goal_stats(db: Any, channel: Any, target_date: date | None = None) -> 
         FROM production_logs WHERE channel_id = ? AND work_date = ?""",
         (channel["id"], selected_iso),
     ).fetchone()
-    script_goal, video_goal = daily_goal_values(db, channel, selected)
+    script_goal, video_goal, configured = daily_goal_values(db, channel, selected)
     scripts_done = int(row["scripts_done"] or 0)
     videos_done = int(row["videos_done"] or 0)
     scripts_counted = min(scripts_done, script_goal)
@@ -1401,7 +1408,10 @@ def daily_goal_stats(db: Any, channel: Any, target_date: date | None = None) -> 
     videos_complete = videos_done >= video_goal
     goal_met = scripts_complete and videos_complete
     today = today_local()
-    if goal_met:
+    if not configured:
+        day_status = "unconfigured"
+        day_status_label = "NÃO CONFIGURADA"
+    elif goal_met:
         day_status = "goal_met"
         day_status_label = "🏆 META BATIDA"
     elif selected < today:
@@ -1432,6 +1442,7 @@ def daily_goal_stats(db: Any, channel: Any, target_date: date | None = None) -> 
         "scripts_complete": scripts_complete,
         "videos_complete": videos_complete,
         "goal_met": goal_met,
+        "configured": configured,
         "day_status": day_status,
         "day_status_label": day_status_label,
         "is_today": selected == today,
@@ -1738,7 +1749,7 @@ def channel_detail(
     channel_id: int,
     status: str = "all",
     q: str = "",
-    sort: str = "nearest",
+    sort: str = "date_asc",
     year: int | None = None,
     month: str = "",
     open_settings: int = 0,
@@ -1793,26 +1804,16 @@ def channel_detail(
         if status in STATUS_LABELS:
             sql += " AND status = ?"
             params.append(status)
+        elif status == "script_ready":
+            sql += " AND script_completed_at IS NOT NULL"
         if search:
             sql += " AND (title LIKE ? OR description LIKE ?)"
             like = f"%{search}%"
             params.extend([like, like])
 
-        sort_mode = sort if sort in {"nearest", "date_asc", "date_desc"} else "nearest"
-        if sort_mode == "date_asc":
-            sql += " ORDER BY planned_date IS NULL, planned_date ASC, updated_at DESC"
-        elif sort_mode == "date_desc":
-            sql += " ORDER BY planned_date IS NULL, planned_date DESC, updated_at DESC"
-        else:
-            # Datas de hoje/futuras mais próximas primeiro; depois, datas passadas
-            # da mais recente para a mais antiga. Cards sem data ficam no final.
-            today_iso = today_local().isoformat()
-            sql += """ ORDER BY
-                CASE WHEN planned_date IS NULL THEN 2 WHEN planned_date >= ? THEN 0 ELSE 1 END,
-                CASE WHEN planned_date >= ? THEN planned_date END ASC,
-                CASE WHEN planned_date < ? THEN planned_date END DESC,
-                updated_at DESC"""
-            params.extend([today_iso, today_iso, today_iso])
+        # Ordem fixa e simples: datas em ordem crescente. Cards sem data ficam no final.
+        sort_mode = "date_asc"
+        sql += " ORDER BY planned_date IS NULL, planned_date ASC, updated_at DESC"
         videos = db.execute(sql, params).fetchall()
 
         stats = channel_stats(db, channel_id, goal, selected_month or None)
@@ -2565,16 +2566,6 @@ def production_flow(request: Request, channel_id: int | None = None, month: str 
             selected_id = int(channel_id or channels[0]["id"])
             selected_channel = next((item for item in channels if int(item["id"]) == selected_id), channels[0])
             selected_id = int(selected_channel["id"])
-            month_start = parse_iso_date(f"{selected_month}-01")
-            month_end = date(
-                month_start.year,
-                month_start.month,
-                calendar.monthrange(month_start.year, month_start.month)[1],
-            )
-            requested_day = parse_iso_date(day, today_local()) if day else today_local()
-            if requested_day < month_start or requested_day > month_end:
-                requested_day = today_local() if month_start <= today_local() <= month_end else month_start
-            selected_day = requested_day.isoformat()
 
             logs = db.execute(
                 "SELECT * FROM production_logs WHERE channel_id = ? AND history_month = ? ORDER BY work_date, created_at",
@@ -2584,32 +2575,35 @@ def production_flow(request: Request, channel_id: int | None = None, month: str 
             for row in logs:
                 logs_by_date.setdefault(str(row["work_date"]), []).append(row)
 
+            # Exibe somente datas criadas manualmente (metas) ou que já possuem
+            # registros. Não gera automaticamente todos os dias do mês.
+            date_rows = db.execute(
+                """SELECT goal_date AS date_value FROM daily_goal_settings
+                   WHERE channel_id = ? AND SUBSTR(goal_date, 1, 7) = ?
+                   UNION
+                   SELECT work_date AS date_value FROM production_logs
+                   WHERE channel_id = ? AND history_month = ?
+                   ORDER BY date_value ASC""",
+                (selected_id, selected_month, selected_id, selected_month),
+            ).fetchall()
+            created_dates = [str(row["date_value"]) for row in date_rows if row["date_value"]]
+
             month_rows = db.execute(
                 """SELECT history_month AS month_value FROM production_logs WHERE channel_id = ?
                 UNION SELECT SUBSTR(goal_date, 1, 7) AS month_value FROM daily_goal_settings WHERE channel_id = ?
                 ORDER BY month_value DESC""",
                 (selected_id, selected_id),
             ).fetchall()
-            available_months = [row["month_value"] for row in month_rows if row["month_value"]]
+            available_months = [str(row["month_value"]) for row in month_rows if row["month_value"]]
             if selected_month not in available_months:
                 available_months.insert(0, selected_month)
 
-            month_dates = [
-                month_start + timedelta(days=index)
-                for index in range((month_end - month_start).days + 1)
-            ]
-            today = today_local()
-            if month_end < today:
-                ordered_dates = sorted(month_dates, reverse=True)
-            elif month_start > today:
-                ordered_dates = month_dates
-            else:
-                ordered_dates = sorted((item for item in month_dates if item <= today), reverse=True)
-                ordered_dates.extend(item for item in month_dates if item > today)
+            requested_day = parse_iso_date(day).isoformat() if day else ""
+            selected_day = requested_day if requested_day in created_dates else (created_dates[0] if created_dates else "")
 
             grouped: list[dict[str, Any]] = []
-            for work_day in ordered_dates:
-                work_date = work_day.isoformat()
+            for work_date in created_dates:
+                work_day = parse_iso_date(work_date)
                 entries = logs_by_date.get(work_date, [])
                 stats = daily_goal_stats(db, selected_channel, work_day)
                 grouped.append({
@@ -2620,12 +2614,16 @@ def production_flow(request: Request, channel_id: int | None = None, month: str 
                     "stats": stats,
                     "open": work_date == selected_day,
                 })
-            default_work_date = selected_day
+
+            current_month = today_local().strftime("%Y-%m")
+            default_work_date = (
+                today_local().isoformat() if selected_month == current_month else f"{selected_month}-01"
+            )
             today_stats = daily_goal_stats(db, selected_channel, today_local())
         else:
             logs, available_months, grouped = [], [selected_month], []
             default_work_date = today_local().isoformat()
-            selected_day = default_work_date
+            selected_day = ""
     return templates.TemplateResponse(
         request,
         "production_flow.html",

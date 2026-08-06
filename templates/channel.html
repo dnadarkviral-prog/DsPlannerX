@@ -24,8 +24,9 @@
     <section class="daily-goals-card" aria-label="Metas diárias de produção">
       <div class="daily-goals-head">
         <div><span>METAS DIÁRIAS</span><small>Hoje · {{ daily_stats.date_br }} · via Fluxo</small></div>
-        <button class="daily-goals-settings" type="button" data-open-modal="dailyGoalsModal" title="Configurar metas diárias" aria-label="Configurar metas diárias">🎚️</button>
+        <a class="daily-goals-settings" href="{{ url_for('production_flow') }}?channel_id={{ channel.id }}&month={{ daily_stats.date[:7] }}" title="Criar ou configurar a meta no Fluxo de Produção" aria-label="Abrir Fluxo de Produção">🎚️</a>
       </div>
+      {% if daily_stats.configured %}
       <div class="daily-goal-row {% if daily_stats.scripts_complete %}goal-complete{% endif %}">
         <div class="daily-goal-line"><span>📜 Roteiros</span><strong>{{ daily_stats.scripts_done }}/{{ daily_stats.script_goal }}</strong></div>
         <div class="daily-progress-track"><div class="daily-progress-fill script" style="width:{{ daily_stats.script_progress }}%"></div></div>
@@ -37,6 +38,12 @@
       <div class="daily-overall-progress {% if daily_stats.goal_met %}complete{% elif daily_stats.half_complete %}half{% endif %}">
         <span>Progresso total do dia</span><strong>{{ daily_stats.overall_progress|int }}%</strong>
       </div>
+      {% else %}
+      <div class="daily-goal-unconfigured">
+        <strong>Meta de hoje não criada</strong>
+        <span>Crie a data manualmente no Fluxo de Produção.</span>
+      </div>
+      {% endif %}
     </section>
     <div class="hero-progress">
       <div class="progress-circle" style="--progress:{{ stats.progress }}"><div><strong>{{ stats.progress|int }}%</strong><span>concluído</span></div></div>
@@ -95,12 +102,8 @@
       <select name="status" onchange="this.form.submit()">
         <option value="all" {% if status_filter == 'all' %}selected{% endif %}>Todos os status</option>
         <option value="production" {% if status_filter == 'production' %}selected{% endif %}>Em produção</option>
-        <option value="completed" {% if status_filter == 'completed' %}selected{% endif %}>Concluído</option>
-      </select>
-      <select name="sort" onchange="this.form.submit()" aria-label="Ordenar cards por data">
-        <option value="nearest" {% if sort_filter == 'nearest' %}selected{% endif %}>📅 Datas mais próximas primeiro</option>
-        <option value="date_asc" {% if sort_filter == 'date_asc' %}selected{% endif %}>⬆️ Data mais antiga primeiro</option>
-        <option value="date_desc" {% if sort_filter == 'date_desc' %}selected{% endif %}>⬇️ Data mais recente primeiro</option>
+        <option value="completed" {% if status_filter == 'completed' %}selected{% endif %}>Concluídos</option>
+        <option value="script_ready" {% if status_filter == 'script_ready' %}selected{% endif %}>Roteiro pronto</option>
       </select>
       <button class="btn btn-ghost" type="submit">Filtrar</button>
     </form>
@@ -189,42 +192,6 @@
   </aside>
 </section>
 
-
-<div class="modal" id="dailyGoalsModal" aria-hidden="true">
-  <div class="modal-backdrop" data-close-modal></div>
-  <div class="modal-dialog daily-goals-dialog">
-    <div class="modal-head">
-      <div><span class="eyebrow">CONTROLE DO DIA</span><h2>Configurar metas diárias</h2></div>
-      <button class="icon-button" type="button" data-close-modal>✕</button>
-    </div>
-    <div class="daily-goals-modal-intro">
-      <span class="daily-lever-icon">🎚️</span>
-      <div><strong>Defina a meta de hoje</strong><p>A meta é específica para {{ daily_stats.date_br }} e só avança pelos registros feitos no Fluxo de Produção. Marcar cards não altera estas barras.</p></div>
-    </div>
-    <form action="{{ url_for('save_daily_goals', channel_id=channel.id) }}" method="post" class="form-grid daily-goals-form">
-      <input type="hidden" name="return_to" value="{{ url_for('channel_detail', channel_id=channel.id) }}{% if selected_month %}?month={{ selected_month }}&year={{ calendar_year }}{% endif %}">
-      <input type="hidden" name="goal_date" value="{{ daily_stats.date }}">
-      <label class="field">
-        <span>Meta de roteiros diários</span>
-        <div class="input-suffix"><input type="number" name="daily_script_goal" min="1" max="999" value="{{ daily_stats.script_goal }}" required><span>roteiros/dia</span></div>
-        <small class="field-help">Avança somente ao registrar “Roteiro pronto” no Fluxo de Produção com a data de hoje.</small>
-      </label>
-      <label class="field">
-        <span>Meta de vídeos diários</span>
-        <div class="input-suffix"><input type="number" name="daily_video_goal" min="1" max="999" value="{{ daily_stats.video_goal }}" required><span>vídeos/dia</span></div>
-        <small class="field-help">Avança somente ao registrar “Vídeo concluído” no Fluxo de Produção com a data de hoje.</small>
-      </label>
-      <div class="daily-goal-live-summary span-2">
-        <div><span>Roteiros feitos hoje</span><strong>{{ daily_stats.scripts_done }}</strong></div>
-        <div><span>Vídeos concluídos hoje</span><strong>{{ daily_stats.videos_done }}</strong></div>
-      </div>
-      <div class="modal-actions span-2">
-        <button type="button" class="btn btn-ghost" data-close-modal>Cancelar</button>
-        <button type="submit" class="btn btn-primary">💾 Salvar meta de hoje</button>
-      </div>
-    </form>
-  </div>
-</div>
 
 <div class="modal" id="titlesModal" aria-hidden="true">
   <div class="modal-backdrop" data-close-modal></div>

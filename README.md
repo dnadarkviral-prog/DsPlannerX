@@ -102,3 +102,13 @@ Esta edição usa exatamente a estrutura de banco da versão estável v2.3.1. O 
 - Ao cruzar 50% da meta de hoje, aparece uma mensagem para continuar; ao chegar a 100%, aparece o troféu com uma mensagem de parabéns.
 - Os cards de vídeo ganharam ordenação por data: mais próximas primeiro, mais antigas primeiro ou mais recentes primeiro.
 - Migração não destrutiva: cria apenas a tabela de metas por data, preservando canais, cards, títulos, anexos e planejamentos existentes.
+
+
+## v2.6.1 — Datas manuais no Fluxo e filtro simplificado
+
+- O Fluxo de Produção não cria mais todos os dias do mês automaticamente.
+- Cada data é criada manualmente com metas próprias de roteiros e vídeos.
+- As barras aparecem somente para datas criadas pelo usuário ou que já tenham registros.
+- A meta diária só existe quando a data de hoje foi criada no Fluxo.
+- Cards ficam sempre em ordem crescente de data.
+- O filtro único inclui: Todos os status, Em produção, Concluídos e Roteiro pronto.

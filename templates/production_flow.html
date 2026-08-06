@@ -7,15 +7,15 @@
 <section class="flow-intro">
   <div>
     <span class="eyebrow">HISTÓRICO OPERACIONAL</span>
-    <h2>Produção organizada por data</h2>
-    <p>Abra uma barra de data e registre os títulos produzidos naquele dia. Somente os registros com a data de hoje alimentam as metas diárias exibidas no canal.</p>
+    <h2>Produção organizada por datas criadas por você</h2>
+    <p>Crie somente as datas que deseja acompanhar. Dentro de cada barra, defina a meta e registre os títulos produzidos naquele dia.</p>
   </div>
-  <div class="flow-badge">📅 META POR DATA</div>
+  <div class="flow-badge">📅 META PERSONALIZADA POR DATA</div>
 </section>
 
 {% if channels %}
 <section class="flow-toolbar panel-card">
-  <form method="get" class="flow-filter-form flow-filter-form-dated">
+  <form method="get" class="flow-filter-form">
     <label class="field">
       <span>Canal</span>
       <select name="channel_id" onchange="this.form.submit()">
@@ -26,23 +26,34 @@
       <span>Mês do histórico</span>
       <input type="month" name="month" value="{{ selected_month }}" onchange="this.form.submit()">
     </label>
-    <label class="field">
-      <span>Abrir uma data</span>
-      <input type="date" name="day" value="{{ selected_day }}" onchange="this.form.submit()">
-    </label>
   </form>
   <div class="flow-month-chips">
     {% for item in available_months %}<a class="{% if item == selected_month %}active{% endif %}" href="{{ url_for('production_flow') }}?channel_id={{ selected_channel.id }}&month={{ item }}">{{ item[5:7] }}/{{ item[:4] }}</a>{% endfor %}
   </div>
 </section>
 
+<section class="panel-card flow-create-date-card">
+  <div class="section-heading inline compact-heading">
+    <div><span class="eyebrow">NOVA DATA</span><h2>Criar uma data personalizada</h2><p>Nenhum dia é criado automaticamente. Escolha a data e as metas que deseja acompanhar.</p></div>
+  </div>
+  <form action="{{ url_for('save_production_flow_goal') }}" method="post" class="form-grid flow-create-date-form">
+    <input type="hidden" name="channel_id" value="{{ selected_channel.id }}">
+    <input type="hidden" name="history_month" value="{{ selected_month }}">
+    <label class="field"><span>Data</span><input type="date" name="work_date" value="{{ default_work_date }}" required></label>
+    <label class="field"><span>Meta de roteiros</span><input type="number" name="daily_script_goal" min="1" max="999" value="1" required></label>
+    <label class="field"><span>Meta de vídeos</span><input type="number" name="daily_video_goal" min="1" max="999" value="1" required></label>
+    <div class="modal-actions"><button class="btn btn-primary" type="submit">＋ Criar data</button></div>
+  </form>
+</section>
+
 <section class="flow-layout">
   <div class="flow-main">
     <section class="panel-card flow-days-panel">
       <div class="section-heading inline compact-heading">
-        <div><span class="eyebrow">DIAS DO MÊS</span><h2>Clique em uma data para registrar</h2><p>Os títulos ficam guardados dentro da data correspondente, sem aparecerem soltos no histórico.</p></div>
+        <div><span class="eyebrow">DATAS CRIADAS</span><h2>Clique em uma barra para registrar</h2><p>As datas aparecem em ordem crescente e só existem quando você as cria.</p></div>
       </div>
 
+      {% if grouped_logs %}
       <div class="flow-date-list">
         {% for group in grouped_logs %}
         <details class="flow-date-accordion {{ group.stats.day_status }}" {% if group.open %}open{% endif %} data-flow-day="{{ group.date }}">
@@ -65,7 +76,7 @@
             </div>
 
             <section class="flow-inner-card">
-              <div class="flow-inner-head"><div><span class="eyebrow">META DA DATA</span><h3>Definir meta de {{ group.date_br }}</h3></div><small>Esta configuração vale somente para esta data.</small></div>
+              <div class="flow-inner-head"><div><span class="eyebrow">META DA DATA</span><h3>Editar meta de {{ group.date_br }}</h3></div><small>Esta configuração vale somente para esta data.</small></div>
               <form action="{{ url_for('save_production_flow_goal') }}" method="post" class="form-grid flow-goal-form">
                 <input type="hidden" name="channel_id" value="{{ selected_channel.id }}">
                 <input type="hidden" name="history_month" value="{{ selected_month }}">
@@ -77,7 +88,7 @@
             </section>
 
             <section class="flow-inner-card flow-register-card">
-              <div class="flow-inner-head"><div><span class="eyebrow">NOVO REGISTRO</span><h3>Cadastrar título em {{ group.date_br }}</h3></div><small>{% if group.stats.is_today %}Este registro contará na meta diária de hoje.{% elif group.stats.is_past %}Ficará no histórico, mas não mudará a meta de hoje.{% else %}Ficará programado nesta data e não mudará a meta de hoje.{% endif %}</small></div>
+              <div class="flow-inner-head"><div><span class="eyebrow">NOVO REGISTRO</span><h3>Cadastrar título em {{ group.date_br }}</h3></div><small>{% if group.stats.is_today %}Conta na meta diária de hoje.{% elif group.stats.is_past %}Fica no histórico, sem alterar a meta de hoje.{% else %}Fica programado para esta data.{% endif %}</small></div>
               <form action="{{ url_for('add_production_log') }}" method="post" class="form-grid">
                 <input type="hidden" name="channel_id" value="{{ selected_channel.id }}">
                 <input type="hidden" name="history_month" value="{{ selected_month }}">
@@ -104,29 +115,35 @@
         </details>
         {% endfor %}
       </div>
+      {% else %}
+      <div class="empty-state compact-empty"><div class="empty-emoji">📅</div><h2>Nenhuma data criada neste mês</h2><p>Use o formulário acima para criar a primeira data e definir as metas dela.</p></div>
+      {% endif %}
     </section>
   </div>
 
   <aside class="flow-side">
     <section class="side-panel flow-today-panel">
       <div class="panel-title"><span>🎯</span><div><small>META DIÁRIA DE HOJE</small><h3>{{ today_stats.date_br }}</h3></div></div>
+      {% if today_stats.configured %}
       <div class="flow-today-total"><strong>{{ today_stats.overall_progress|int }}%</strong><span>{{ today_stats.day_status_label }}</span></div>
       <div class="flow-today-row"><span>📜 Roteiros</span><b>{{ today_stats.scripts_done }}/{{ today_stats.script_goal }}</b></div>
       <div class="daily-progress-track"><div class="daily-progress-fill" style="width:{{ today_stats.script_progress }}%"></div></div>
       <div class="flow-today-row"><span>🎬 Vídeos</span><b>{{ today_stats.videos_done }}/{{ today_stats.video_goal }}</b></div>
       <div class="daily-progress-track"><div class="daily-progress-fill video" style="width:{{ today_stats.video_progress }}%"></div></div>
-      <p class="flow-help">Esta meta conta exclusivamente os registros do Fluxo de Produção com a data de hoje. Marcar um card como “Roteiro pronto” ou “Concluído” não altera estes números.</p>
-      <a class="btn btn-secondary full" href="{{ url_for('production_flow') }}?channel_id={{ selected_channel.id }}&month={{ today_stats.date[:7] }}&day={{ today_stats.date }}">Abrir a data de hoje</a>
+      {% else %}
+      <div class="flow-today-unconfigured"><strong>Meta não criada</strong><span>Crie manualmente a data de hoje para começar a contabilizar.</span></div>
+      {% endif %}
+      <p class="flow-help">Somente registros do Fluxo com a data de hoje contam na meta diária. Status dos cards não alteram esses números.</p>
     </section>
 
     <section class="side-panel">
       <div class="panel-title"><span>🏷️</span><div><small>ETIQUETAS DO HISTÓRICO</small><h3>Resultado de cada dia</h3></div></div>
       <div class="flow-legend"><span class="goal_met">🏆 Meta batida</span><span class="incomplete">Meta incompleta</span><span class="halfway">50% — continue</span><span class="planned">Planejado</span></div>
-      <p class="flow-help">Quando a data termina, o PlannerX mantém no histórico “Meta batida” ou “Meta incompleta”, conforme os registros daquele dia.</p>
+      <p class="flow-help">Quando a data termina, o PlannerX mantém no histórico a etiqueta correspondente ao resultado daquele dia.</p>
     </section>
   </aside>
 </section>
 {% else %}
-<section class="empty-state"><div class="empty-emoji">📺</div><h2>Cadastre um canal primeiro</h2><p>O Fluxo de Produção precisa estar associado a um canal e às metas diárias dele.</p><button class="btn btn-primary" type="button" data-open-modal="channelModal">＋ Criar canal</button></section>
+<section class="empty-state"><div class="empty-emoji">📺</div><h2>Cadastre um canal primeiro</h2><p>O Fluxo de Produção precisa estar associado a um canal.</p><button class="btn btn-primary" type="button" data-open-modal="channelModal">＋ Criar canal</button></section>
 {% endif %}
 {% endblock %}
