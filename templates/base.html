@@ -6,11 +6,11 @@
   <meta name="theme-color" content="#0b0711">
   <title>{% block title %}DS-PLANNERX{% endblock %}</title>
   <meta name="application-name" content="DS-PLANNERX">
-  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', path='/img/dsplannerx-favicon.svg') }}?v=2.3">
-  <link rel="shortcut icon" href="{{ url_for('static', path='/img/dsplannerx-favicon.svg') }}?v=2.3">
-  <link rel="stylesheet" href="{{ url_for('static', path='/css/style.css') }}?v=2.3">
-  <script defer src="{{ url_for('static', path='/js/app.js') }}?v=2.3"></script>
-  {% if cloud_upload_enabled %}<script type="module" src="{{ url_for('static', path='/js/cloud-upload.js') }}?v=2.3"></script>{% endif %}
+  <link rel="icon" type="image/svg+xml" href="{{ url_for('static', path='/img/dsplannerx-favicon.svg') }}?v=2.6">
+  <link rel="shortcut icon" href="{{ url_for('static', path='/img/dsplannerx-favicon.svg') }}?v=2.6">
+  <link rel="stylesheet" href="{{ url_for('static', path='/css/style.css') }}?v=2.6">
+  <script defer src="{{ url_for('static', path='/js/app.js') }}?v=2.6"></script>
+  {% if cloud_upload_enabled %}<script type="module" src="{{ url_for('static', path='/js/cloud-upload.js') }}?v=2.6"></script>{% endif %}
 </head>
 <body>
   <div class="app-shell">
@@ -109,7 +109,7 @@
             </label>
             <label class="schedule-mode-option">
               <input type="radio" name="schedule_mode" value="custom">
-              <span><b>🧩 Personalizado por mês</b><small>Crie períodos de postagem diferentes dentro de cada mês.</small></span>
+              <span><b>🧩 Personalizado por mês</b><small>Crie regras diferentes para cada trecho do mês no calendário do canal.</small></span>
             </label>
           </div>
         </div>

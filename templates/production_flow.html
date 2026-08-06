@@ -5,15 +5,31 @@
 
 {% block content %}
 <section class="flow-intro">
-  <div><span class="eyebrow">HISTÓRICO OPERACIONAL</span><h2>Registre o que foi feito no dia</h2><p>Cada lançamento de “Roteiro pronto” ou “Vídeo concluído” alimenta as metas diárias do canal selecionado.</p></div>
-  <div class="flow-badge">⚙️ CONTROLE MANUAL</div>
+  <div>
+    <span class="eyebrow">HISTÓRICO OPERACIONAL</span>
+    <h2>Produção organizada por data</h2>
+    <p>Abra uma barra de data e registre os títulos produzidos naquele dia. Somente os registros com a data de hoje alimentam as metas diárias exibidas no canal.</p>
+  </div>
+  <div class="flow-badge">📅 META POR DATA</div>
 </section>
 
 {% if channels %}
 <section class="flow-toolbar panel-card">
-  <form method="get" class="flow-filter-form">
-    <label class="field"><span>Canal</span><select name="channel_id" onchange="this.form.submit()">{% for channel in channels %}<option value="{{ channel.id }}" {% if selected_channel and channel.id == selected_channel.id %}selected{% endif %}>{{ channel.name }}</option>{% endfor %}</select></label>
-    <label class="field"><span>Mês do histórico</span><input type="month" name="month" value="{{ selected_month }}" onchange="this.form.submit()"></label>
+  <form method="get" class="flow-filter-form flow-filter-form-dated">
+    <label class="field">
+      <span>Canal</span>
+      <select name="channel_id" onchange="this.form.submit()">
+        {% for channel in channels %}<option value="{{ channel.id }}" {% if selected_channel and channel.id == selected_channel.id %}selected{% endif %}>{{ channel.name }}</option>{% endfor %}
+      </select>
+    </label>
+    <label class="field">
+      <span>Mês do histórico</span>
+      <input type="month" name="month" value="{{ selected_month }}" onchange="this.form.submit()">
+    </label>
+    <label class="field">
+      <span>Abrir uma data</span>
+      <input type="date" name="day" value="{{ selected_day }}" onchange="this.form.submit()">
+    </label>
   </form>
   <div class="flow-month-chips">
     {% for item in available_months %}<a class="{% if item == selected_month %}active{% endif %}" href="{{ url_for('production_flow') }}?channel_id={{ selected_channel.id }}&month={{ item }}">{{ item[5:7] }}/{{ item[:4] }}</a>{% endfor %}
@@ -22,47 +38,91 @@
 
 <section class="flow-layout">
   <div class="flow-main">
-    <section class="panel-card">
-      <div class="section-heading inline compact-heading"><div><span class="eyebrow">NOVO LANÇAMENTO</span><h2>Adicionar atividade</h2></div></div>
-      <form action="{{ url_for('add_production_log') }}" method="post" class="form-grid">
-        <input type="hidden" name="channel_id" value="{{ selected_channel.id }}">
-        <label class="field"><span>Mês do histórico</span><input type="month" name="history_month" value="{{ selected_month }}" required></label>
-        <label class="field"><span>Data da atividade</span><input type="date" name="work_date" value="{{ default_work_date }}" required></label>
-        <label class="field span-2"><span>Título do vídeo</span><input name="video_title" placeholder="Ex.: Minha filha vendeu a casa sem me avisar..." required></label>
-        <label class="field"><span>Nome do operador</span><input name="operator_name" placeholder="Quem realizou a tarefa" required></label>
-        <label class="field"><span>Status realizado</span><select name="status"><option value="script_ready">📜 Roteiro pronto</option><option value="video_completed">🎬 Vídeo concluído</option></select></label>
-        <div class="modal-actions span-2"><button class="btn btn-primary" type="submit">＋ Registrar no fluxo</button></div>
-      </form>
-    </section>
+    <section class="panel-card flow-days-panel">
+      <div class="section-heading inline compact-heading">
+        <div><span class="eyebrow">DIAS DO MÊS</span><h2>Clique em uma data para registrar</h2><p>Os títulos ficam guardados dentro da data correspondente, sem aparecerem soltos no histórico.</p></div>
+      </div>
 
-    {% if grouped_logs %}
-      {% for group in grouped_logs %}
-      <section class="flow-day panel-card {% if group.stats.scripts_complete and group.stats.videos_complete %}goal-reached{% endif %}">
-        <div class="flow-day-head">
-          <div><span>{{ group.date_br }}</span><h3>{{ group.entries|length }} atividade{{ 's' if group.entries|length != 1 else '' }}</h3></div>
-          <div class="flow-day-goals"><b>📜 {{ group.stats.scripts_done }}/{{ group.stats.script_goal }}</b><b>🎬 {{ group.stats.videos_done }}/{{ group.stats.video_goal }}</b>{% if group.stats.scripts_complete or group.stats.videos_complete %}<em>🏆 META ALCANÇADA</em>{% endif %}</div>
-        </div>
-        <div class="flow-entry-list">
-          {% for entry in group.entries %}
-          <article class="flow-entry">
-            <span class="flow-status {{ entry.status }}">{{ '📜' if entry.status == 'script_ready' else '🎬' }}</span>
-            <div><strong>{{ entry.video_title }}</strong><small>{{ production_status_labels[entry.status] }} · Operador: {{ entry.operator_name }}</small></div>
-            <form action="{{ url_for('delete_production_log', log_id=entry.id) }}" method="post" data-confirm="Remover este lançamento do histórico?"><button class="icon-button" type="submit">🗑️</button></form>
-          </article>
-          {% endfor %}
-        </div>
-      </section>
-      {% endfor %}
-    {% else %}
-      <section class="empty-state compact-empty"><div class="empty-emoji">⚙️</div><h2>Nenhuma atividade neste mês</h2><p>Registre o primeiro roteiro ou vídeo concluído para criar o histórico de {{ selected_month[5:7] }}/{{ selected_month[:4] }}.</p></section>
-    {% endif %}
+      <div class="flow-date-list">
+        {% for group in grouped_logs %}
+        <details class="flow-date-accordion {{ group.stats.day_status }}" {% if group.open %}open{% endif %} data-flow-day="{{ group.date }}">
+          <summary class="flow-date-bar">
+            <span class="flow-date-number">{{ group.date[8:10] }}</span>
+            <div class="flow-date-main">
+              <strong>{{ group.date_br }}</strong>
+              <small>{{ group.entries|length }} registro{{ 's' if group.entries|length != 1 else '' }} · 📜 {{ group.stats.scripts_done }}/{{ group.stats.script_goal }} · 🎬 {{ group.stats.videos_done }}/{{ group.stats.video_goal }}</small>
+              <span class="flow-date-progress"><i style="width:{{ group.stats.overall_progress }}%"></i></span>
+            </div>
+            <span class="flow-day-label {{ group.stats.day_status }}">{{ group.stats.day_status_label }}</span>
+            <span class="flow-date-chevron">⌄</span>
+          </summary>
+
+          <div class="flow-date-content">
+            <div class="flow-date-stats">
+              <div><span>Roteiros</span><strong>{{ group.stats.scripts_done }}/{{ group.stats.script_goal }}</strong><small>{{ group.stats.script_progress|int }}%</small></div>
+              <div><span>Vídeos</span><strong>{{ group.stats.videos_done }}/{{ group.stats.video_goal }}</strong><small>{{ group.stats.video_progress|int }}%</small></div>
+              <div class="overall"><span>Progresso total</span><strong>{{ group.stats.overall_progress|int }}%</strong><small>{{ group.stats.day_status_label }}</small></div>
+            </div>
+
+            <section class="flow-inner-card">
+              <div class="flow-inner-head"><div><span class="eyebrow">META DA DATA</span><h3>Definir meta de {{ group.date_br }}</h3></div><small>Esta configuração vale somente para esta data.</small></div>
+              <form action="{{ url_for('save_production_flow_goal') }}" method="post" class="form-grid flow-goal-form">
+                <input type="hidden" name="channel_id" value="{{ selected_channel.id }}">
+                <input type="hidden" name="history_month" value="{{ selected_month }}">
+                <input type="hidden" name="work_date" value="{{ group.date }}">
+                <label class="field"><span>Meta de roteiros</span><input type="number" name="daily_script_goal" min="1" max="999" value="{{ group.stats.script_goal }}" required></label>
+                <label class="field"><span>Meta de vídeos</span><input type="number" name="daily_video_goal" min="1" max="999" value="{{ group.stats.video_goal }}" required></label>
+                <div class="modal-actions span-2"><button class="btn btn-secondary" type="submit">🎚️ Salvar meta desta data</button></div>
+              </form>
+            </section>
+
+            <section class="flow-inner-card flow-register-card">
+              <div class="flow-inner-head"><div><span class="eyebrow">NOVO REGISTRO</span><h3>Cadastrar título em {{ group.date_br }}</h3></div><small>{% if group.stats.is_today %}Este registro contará na meta diária de hoje.{% elif group.stats.is_past %}Ficará no histórico, mas não mudará a meta de hoje.{% else %}Ficará programado nesta data e não mudará a meta de hoje.{% endif %}</small></div>
+              <form action="{{ url_for('add_production_log') }}" method="post" class="form-grid">
+                <input type="hidden" name="channel_id" value="{{ selected_channel.id }}">
+                <input type="hidden" name="history_month" value="{{ selected_month }}">
+                <input type="hidden" name="work_date" value="{{ group.date }}">
+                <label class="field span-2"><span>Título do vídeo</span><input name="video_title" placeholder="Ex.: Minha filha vendeu a casa sem me avisar..." required></label>
+                <label class="field"><span>Nome do operador</span><input name="operator_name" placeholder="Quem realizou a tarefa" required></label>
+                <label class="field"><span>Status realizado</span><select name="status"><option value="script_ready">📜 Roteiro pronto</option><option value="video_completed">🎬 Vídeo concluído</option></select></label>
+                <div class="modal-actions span-2"><button class="btn btn-primary" type="submit">＋ Registrar nesta data</button></div>
+              </form>
+            </section>
+
+            <div class="flow-entry-list">
+              {% for entry in group.entries %}
+              <article class="flow-entry">
+                <span class="flow-status {{ entry.status }}">{{ '📜' if entry.status == 'script_ready' else '🎬' }}</span>
+                <div><strong>{{ entry.video_title }}</strong><small>{{ production_status_labels[entry.status] }} · Operador: {{ entry.operator_name }}</small></div>
+                <form action="{{ url_for('delete_production_log', log_id=entry.id) }}" method="post" data-confirm="Remover este lançamento do histórico?"><button class="icon-button" type="submit">🗑️</button></form>
+              </article>
+              {% else %}
+              <div class="flow-date-empty">Nenhum título registrado nesta data.</div>
+              {% endfor %}
+            </div>
+          </div>
+        </details>
+        {% endfor %}
+      </div>
+    </section>
   </div>
 
   <aside class="flow-side">
+    <section class="side-panel flow-today-panel">
+      <div class="panel-title"><span>🎯</span><div><small>META DIÁRIA DE HOJE</small><h3>{{ today_stats.date_br }}</h3></div></div>
+      <div class="flow-today-total"><strong>{{ today_stats.overall_progress|int }}%</strong><span>{{ today_stats.day_status_label }}</span></div>
+      <div class="flow-today-row"><span>📜 Roteiros</span><b>{{ today_stats.scripts_done }}/{{ today_stats.script_goal }}</b></div>
+      <div class="daily-progress-track"><div class="daily-progress-fill" style="width:{{ today_stats.script_progress }}%"></div></div>
+      <div class="flow-today-row"><span>🎬 Vídeos</span><b>{{ today_stats.videos_done }}/{{ today_stats.video_goal }}</b></div>
+      <div class="daily-progress-track"><div class="daily-progress-fill video" style="width:{{ today_stats.video_progress }}%"></div></div>
+      <p class="flow-help">Esta meta conta exclusivamente os registros do Fluxo de Produção com a data de hoje. Marcar um card como “Roteiro pronto” ou “Concluído” não altera estes números.</p>
+      <a class="btn btn-secondary full" href="{{ url_for('production_flow') }}?channel_id={{ selected_channel.id }}&month={{ today_stats.date[:7] }}&day={{ today_stats.date }}">Abrir a data de hoje</a>
+    </section>
+
     <section class="side-panel">
-      <div class="panel-title"><span>🎯</span><div><small>METAS DO CANAL</small><h3>{{ selected_channel.name }}</h3></div></div>
-      <p class="flow-help">Os lançamentos manuais somam com as marcações feitas nos cards. Ao atingir a meta do dia, o PlannerX exibe um troféu e uma mensagem diferente.</p>
-      <a class="btn btn-secondary full" href="{{ url_for('channel_detail', channel_id=selected_channel.id) }}">Ver metas diárias</a>
+      <div class="panel-title"><span>🏷️</span><div><small>ETIQUETAS DO HISTÓRICO</small><h3>Resultado de cada dia</h3></div></div>
+      <div class="flow-legend"><span class="goal_met">🏆 Meta batida</span><span class="incomplete">Meta incompleta</span><span class="halfway">50% — continue</span><span class="planned">Planejado</span></div>
+      <p class="flow-help">Quando a data termina, o PlannerX mantém no histórico “Meta batida” ou “Meta incompleta”, conforme os registros daquele dia.</p>
     </section>
   </aside>
 </section>

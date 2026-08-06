@@ -89,3 +89,16 @@ Esta edição usa exatamente a estrutura de banco da versão estável v2.3.1. O 
 - O download usa o arquivo original armazenado no Vercel Blob, sem conversão de codificação.
 - Arquivos TXT/SRT que aparecem com caracteres estranhos no navegador podem ser baixados e abertos no editor adequado.
 - A visualização e a exclusão dos anexos continuam disponíveis separadamente.
+
+
+## v2.6 — Meta diária pelo Fluxo de Produção
+
+- As metas diárias passam a contar **exclusivamente** os registros do Fluxo de Produção com a mesma data.
+- Marcar um card como “Roteiro pronto” ou “Concluído” não altera mais a meta diária.
+- Um registro feito para uma data anterior permanece no histórico daquela data, mas não entra na meta de hoje.
+- Cada data pode ter sua própria meta de roteiros e vídeos.
+- O Fluxo de Produção foi reorganizado em barras de datas expansíveis; os títulos ficam dentro do respectivo dia.
+- Dias encerrados recebem as etiquetas **🏆 Meta batida** ou **Meta incompleta**.
+- Ao cruzar 50% da meta de hoje, aparece uma mensagem para continuar; ao chegar a 100%, aparece o troféu com uma mensagem de parabéns.
+- Os cards de vídeo ganharam ordenação por data: mais próximas primeiro, mais antigas primeiro ou mais recentes primeiro.
+- Migração não destrutiva: cria apenas a tabela de metas por data, preservando canais, cards, títulos, anexos e planejamentos existentes.

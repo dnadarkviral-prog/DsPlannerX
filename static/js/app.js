@@ -37,6 +37,17 @@
     button.addEventListener('click', () => closeCelebration(button.closest('[data-goal-celebration]')));
   });
 
+  // A mensagem de 50%/100% deve aparecer uma única vez após o registro.
+  const currentUrl = new URL(window.location.href);
+  if (currentUrl.searchParams.has('celebrate')) {
+    currentUrl.searchParams.delete('celebrate');
+    window.history.replaceState({}, '', currentUrl.toString());
+  }
+
+  // No Fluxo de Produção, posiciona a data aberta no campo de visão.
+  const activeFlowDay = document.querySelector('[data-flow-day][open]');
+  if (activeFlowDay) setTimeout(() => activeFlowDay.scrollIntoView({ block: 'center', behavior: 'smooth' }), 180);
+
   document.querySelectorAll('[data-open-modal]').forEach((button) => {
     button.addEventListener('click', () => openModal(button.dataset.openModal));
   });
@@ -452,24 +463,16 @@
     const normalizeRuleControls = (row) => {
       const mode = row.querySelector('select[name="rule_frequency_modes"]');
       const value = row.querySelector('input[name="rule_interval_days"]');
-      const videosInput = row.querySelector('input[name="rule_videos_per_day"]');
       const suffix = row.querySelector('[data-custom-rule-suffix]');
       const isDaysOff = mode?.value === 'days_off';
       const raw = Number.parseInt(value?.value || (isDaysOff ? '0' : '1'), 10);
       const normalized = isDaysOff ? Math.max(0, raw || 0) : Math.max(1, raw || 1);
-      const videosPerDay = Math.min(999, Math.max(1, Number.parseInt(videosInput?.value || '1', 10) || 1));
       if (value) {
         value.min = isDaysOff ? '0' : '1';
         value.value = String(normalized);
       }
-      if (videosInput) videosInput.value = String(videosPerDay);
       if (suffix) suffix.textContent = isDaysOff ? 'dias sem postar' : 'dias entre postagens';
-      return {
-        mode: isDaysOff ? 'days_off' : 'interval',
-        value: normalized,
-        step: isDaysOff ? normalized + 1 : normalized,
-        videosPerDay,
-      };
+      return { mode: isDaysOff ? 'days_off' : 'interval', value: normalized, step: isDaysOff ? normalized + 1 : normalized };
     };
 
     const renumberRules = () => {
@@ -495,7 +498,7 @@
     };
 
     const updateCustomSummary = () => {
-      const videosByDate = new Map();
+      const allDates = new Set();
       [...rulesList.querySelectorAll('[data-custom-rule-row]')].forEach((row) => {
         const startInput = row.querySelector('input[name="rule_start_dates"]');
         const endInput = row.querySelector('input[name="rule_end_dates"]');
@@ -512,34 +515,27 @@
           return;
         }
         let current = new Date(first);
-        let dateCount = 0;
+        let count = 0;
         const samples = [];
-        while (current <= last && dateCount < 400) {
+        while (current <= last && count < 400) {
           const key = isoLocalDate(current);
-          videosByDate.set(key, Math.max(videosByDate.get(key) || 0, normalized.videosPerDay));
+          allDates.add(key);
           if (samples.length < 5) samples.push(formatShortDate(current));
           current = addDays(current, Math.max(1, normalized.step));
-          dateCount += 1;
+          count += 1;
         }
         if (preview) {
           const rhythm = normalized.mode === 'days_off'
             ? `${normalized.value} dia${normalized.value === 1 ? '' : 's'} completo${normalized.value === 1 ? '' : 's'} sem postar`
             : (normalized.value === 1 ? 'postagem diária' : `a cada ${normalized.value} dias`);
-          const ruleVideos = dateCount * normalized.videosPerDay;
-          preview.textContent = `${dateCount} data${dateCount === 1 ? '' : 's'} · ${ruleVideos} vídeo${ruleVideos === 1 ? '' : 's'} (${normalized.videosPerDay} por dia) · ${rhythm} · ${samples.join(', ')}${dateCount > samples.length ? '...' : ''}`;
+          preview.textContent = `${count} vídeo${count === 1 ? '' : 's'} · ${rhythm} · ${samples.join(', ')}${count > samples.length ? '...' : ''}`;
         }
       });
-      const dates = [...videosByDate.keys()].sort();
-      const totalVideos = dates.reduce((total, item) => total + (videosByDate.get(item) || 0), 0);
-      const dateCountNode = builder.querySelector('[data-custom-plan-date-count]');
-      if (countNode) countNode.textContent = String(totalVideos);
-      if (dateCountNode) dateCountNode.textContent = String(dates.length);
+      const dates = [...allDates].sort();
+      if (countNode) countNode.textContent = String(dates.length);
       if (datesNode) {
         datesNode.innerHTML = dates.length
-          ? dates.map((item) => {
-            const quantity = videosByDate.get(item) || 1;
-            return `<span>${formatShortDate(parseLocalDate(item))} · ${quantity} vídeo${quantity === 1 ? '' : 's'}</span>`;
-          }).join('')
+          ? dates.map((item) => `<span>${formatShortDate(parseLocalDate(item))}</span>`).join('')
           : 'Adicione um período de postagem para calcular.';
       }
       updateDeleteSlot();
@@ -553,7 +549,6 @@
       const end = row.querySelector('input[name="rule_end_dates"]');
       const mode = row.querySelector('select[name="rule_frequency_modes"]');
       const value = row.querySelector('input[name="rule_interval_days"]');
-      const videosPerDay = row.querySelector('input[name="rule_videos_per_day"]');
       if (start) {
         start.min = isoLocalDate(bounds.first);
         start.max = isoLocalDate(bounds.last);
@@ -566,7 +561,6 @@
       }
       if (mode) mode.value = data.frequency_mode === 'days_off' ? 'days_off' : 'interval';
       if (value) value.value = String(data.interval_days ?? 1);
-      if (videosPerDay) videosPerDay.value = String(data.videos_per_day ?? 1);
       row.querySelector('[data-remove-custom-rule]')?.addEventListener('click', () => {
         row.remove();
         renumberRules();
@@ -596,7 +590,6 @@
           end_date: isoLocalDate(end),
           frequency_mode: 'interval',
           interval_days: 1,
-          videos_per_day: 1,
         });
         startDay = endDay + 1;
         week += 1;

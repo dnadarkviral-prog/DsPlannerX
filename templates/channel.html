@@ -23,7 +23,7 @@
   <div class="hero-metrics">
     <section class="daily-goals-card" aria-label="Metas diárias de produção">
       <div class="daily-goals-head">
-        <div><span>METAS DIÁRIAS</span><small>Hoje · {{ daily_stats.date_br }}</small></div>
+        <div><span>METAS DIÁRIAS</span><small>Hoje · {{ daily_stats.date_br }} · via Fluxo</small></div>
         <button class="daily-goals-settings" type="button" data-open-modal="dailyGoalsModal" title="Configurar metas diárias" aria-label="Configurar metas diárias">🎚️</button>
       </div>
       <div class="daily-goal-row {% if daily_stats.scripts_complete %}goal-complete{% endif %}">
@@ -33,6 +33,9 @@
       <div class="daily-goal-row {% if daily_stats.videos_complete %}goal-complete{% endif %}">
         <div class="daily-goal-line"><span>🎬 Vídeos</span><strong>{{ daily_stats.videos_done }}/{{ daily_stats.video_goal }}</strong></div>
         <div class="daily-progress-track"><div class="daily-progress-fill video" style="width:{{ daily_stats.video_progress }}%"></div></div>
+      </div>
+      <div class="daily-overall-progress {% if daily_stats.goal_met %}complete{% elif daily_stats.half_complete %}half{% endif %}">
+        <span>Progresso total do dia</span><strong>{{ daily_stats.overall_progress|int }}%</strong>
       </div>
     </section>
     <div class="hero-progress">
@@ -58,7 +61,7 @@
     <div class="month-mini-grid configured-months">
       {% for month in month_cards %}
       <a class="month-mini-card planned {% if month.year_month == selected_month %}selected{% elif month.is_current %}current{% endif %}" href="{{ url_for('channel_detail', channel_id=channel.id) }}?month={{ month.year_month }}&year={{ month.year_month[:4] }}">
-        <b>{{ month.short }}</b><span>{{ month.planned_video_count }} vídeos</span><small>{{ month.date_count }} datas · {{ month.video_count }} cards · {{ month.rule_count }} períodos</small>
+        <b>{{ month.short }}</b><span>{{ month.date_count }} postagens</span><small>{{ month.video_count }} cards · {{ month.rule_count }} períodos</small>
       </a>
       {% endfor %}
     </div>
@@ -93,6 +96,11 @@
         <option value="all" {% if status_filter == 'all' %}selected{% endif %}>Todos os status</option>
         <option value="production" {% if status_filter == 'production' %}selected{% endif %}>Em produção</option>
         <option value="completed" {% if status_filter == 'completed' %}selected{% endif %}>Concluído</option>
+      </select>
+      <select name="sort" onchange="this.form.submit()" aria-label="Ordenar cards por data">
+        <option value="nearest" {% if sort_filter == 'nearest' %}selected{% endif %}>📅 Datas mais próximas primeiro</option>
+        <option value="date_asc" {% if sort_filter == 'date_asc' %}selected{% endif %}>⬆️ Data mais antiga primeiro</option>
+        <option value="date_desc" {% if sort_filter == 'date_desc' %}selected{% endif %}>⬇️ Data mais recente primeiro</option>
       </select>
       <button class="btn btn-ghost" type="submit">Filtrar</button>
     </form>
@@ -161,7 +169,7 @@
         <div class="date-item {{ item.state }} {% if loop.first %}next{% endif %}">
           <span>{{ item.date.strftime('%d') }}</span>
           <div><strong>{{ item.date.strftime('%d/%m/%Y') }}</strong><small>{{ item.label }}</small></div>
-          <em>{{ item.planned_count }} vídeo{{ 's' if item.planned_count != 1 else '' }}</em>
+          {% if item.videos %}<em>{{ item.published_count }}/{{ item.videos|length }}</em>{% endif %}
         </div>
         {% else %}
         <div class="schedule-empty">Abra um mês no calendário e crie regras personalizadas.</div>
@@ -191,19 +199,20 @@
     </div>
     <div class="daily-goals-modal-intro">
       <span class="daily-lever-icon">🎚️</span>
-      <div><strong>Defina seu ritmo de produção</strong><p>As barras começam em zero a cada novo dia. Elas são independentes da meta mensal, do calendário e do Banco de Títulos.</p></div>
+      <div><strong>Defina a meta de hoje</strong><p>A meta é específica para {{ daily_stats.date_br }} e só avança pelos registros feitos no Fluxo de Produção. Marcar cards não altera estas barras.</p></div>
     </div>
     <form action="{{ url_for('save_daily_goals', channel_id=channel.id) }}" method="post" class="form-grid daily-goals-form">
       <input type="hidden" name="return_to" value="{{ url_for('channel_detail', channel_id=channel.id) }}{% if selected_month %}?month={{ selected_month }}&year={{ calendar_year }}{% endif %}">
+      <input type="hidden" name="goal_date" value="{{ daily_stats.date }}">
       <label class="field">
         <span>Meta de roteiros diários</span>
         <div class="input-suffix"><input type="number" name="daily_script_goal" min="1" max="999" value="{{ daily_stats.script_goal }}" required><span>roteiros/dia</span></div>
-        <small class="field-help">Avança ao marcar “Roteiro pronto” em um card.</small>
+        <small class="field-help">Avança somente ao registrar “Roteiro pronto” no Fluxo de Produção com a data de hoje.</small>
       </label>
       <label class="field">
         <span>Meta de vídeos diários</span>
         <div class="input-suffix"><input type="number" name="daily_video_goal" min="1" max="999" value="{{ daily_stats.video_goal }}" required><span>vídeos/dia</span></div>
-        <small class="field-help">Avança ao mudar o card para “Concluído”.</small>
+        <small class="field-help">Avança somente ao registrar “Vídeo concluído” no Fluxo de Produção com a data de hoje.</small>
       </label>
       <div class="daily-goal-live-summary span-2">
         <div><span>Roteiros feitos hoje</span><strong>{{ daily_stats.scripts_done }}</strong></div>
@@ -211,7 +220,7 @@
       </div>
       <div class="modal-actions span-2">
         <button type="button" class="btn btn-ghost" data-close-modal>Cancelar</button>
-        <button type="submit" class="btn btn-primary">💾 Salvar metas diárias</button>
+        <button type="submit" class="btn btn-primary">💾 Salvar meta de hoje</button>
       </div>
     </form>
   </div>
@@ -240,7 +249,7 @@
     </div>
     <div class="title-manager-progress">
       <div class="progress-track"><div class="progress-fill" data-title-progress style="width:{{ stats.title_progress }}%"></div></div>
-      <small>{% if selected_month %}Este banco é exclusivo de {{ selected_month_label }} e acompanha os {{ stats.goal }} vídeos planejados para o mês.{% else %}Preencha os campos abaixo. A quantidade acompanha a meta geral do canal.{% endif %}</small>
+      <small>{% if selected_month %}Este banco é exclusivo de {{ selected_month_label }} e acompanha as {{ stats.goal }} datas calculadas para o mês.{% else %}Preencha os campos abaixo. A quantidade acompanha a meta geral do canal.{% endif %}</small>
     </div>
     <div class="title-status-legend" aria-label="Legenda das cores dos títulos">
       <span><i class="ready"></i> Roxo · Permitido para uso</span>
@@ -379,7 +388,7 @@
       <div class="saved-plan-chips" aria-label="Planejamentos já criados">
         {% for item in custom_plans %}
         <a href="{{ url_for('channel_detail', channel_id=channel.id) }}?month={{ item.year_month }}&year={{ item.year_month[:4] }}&open_settings=1&plan_month={{ item.year_month }}" class="saved-plan-chip {% if selected_plan_month == item.year_month %}active{% endif %}">
-          <b>{{ item.month_label }}</b><span>{{ item.planned_video_count }} vídeos · {{ item.date_count }} datas</span>
+          <b>{{ item.month_label }}</b><span>{{ item.date_count }} postagens</span>
         </a>
         {% endfor %}
       </div>
@@ -404,14 +413,13 @@
             <label class="field"><span>Termina em</span><input type="date" name="rule_end_dates" required></label>
             <label class="field"><span>Ritmo</span><select name="rule_frequency_modes"><option value="interval">📆 Intervalo entre postagens</option><option value="days_off">⏸️ Dias completos sem postar</option></select></label>
             <label class="field"><span>Quantidade</span><div class="input-suffix"><input type="number" name="rule_interval_days" min="1" value="1" required><span data-custom-rule-suffix>dias entre postagens</span></div></label>
-            <label class="field"><span>Vídeos por dia</span><div class="input-suffix"><input type="number" name="rule_videos_per_day" min="1" max="999" value="1" required><span>vídeos</span></div></label>
             <button type="button" class="icon-button custom-rule-remove" data-remove-custom-rule title="Remover período">🗑️</button>
             <div class="custom-rule-preview" data-custom-rule-preview></div>
           </article>
         </template>
 
         <section class="custom-plan-summary">
-          <div class="custom-plan-summary-number"><span>TOTAL CALCULADO</span><strong data-custom-plan-count>0</strong><small><b data-custom-plan-date-count>0</b> datas únicas</small></div>
+          <div class="custom-plan-summary-number"><span>TOTAL CALCULADO</span><strong data-custom-plan-count>0</strong><small>vídeos / datas de postagem</small></div>
           <div class="custom-plan-dates"><span>DATAS UNIFICADAS</span><div data-custom-plan-dates>Adicione um período de postagem para calcular.</div></div>
         </section>
 
